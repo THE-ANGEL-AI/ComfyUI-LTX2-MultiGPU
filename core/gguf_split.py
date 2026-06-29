@@ -116,30 +116,76 @@ def resolve_devices() -> tuple[Any, Any]:
     return primary, secondary
 
 
-def _get_city96_patcher_class():
-    """Импортирует UnetLoaderGGUF (city96) лениво, чтобы R6 не падать.
+def _resolve_donor_device(spec: str, primary: Any, secondary: Any) -> Any:
+    """Приводит donor_device string → torch.device для encoder'а Gemma.
 
-    Совместим с загрузкой обоих имён: UnetLoaderGGUF (новая) / unet_loader_gguf (старая).
+    Семантика:
+      "auto"   → secondary (текущая поведение без изменений, по умолчанию cuda:1)
+      "cuda:0" → primary   (override: encoder на primary, projection должна fit)
+      "cuda:1" → secondary (явный secondary для single-GPU config неоднозначный,
+                            но мы возвращаем secondary как «second available GPU»)
+      "cpu"    → CPU (encoder не грузится на GPU — text_projection всё равно
+                     поднимается на primary для sampling'а)
+
+    Не матчит на «current torch device» по дизайну — это UI-driven выбор,
+    который надо детерминированно меппить в устройства.
     """
-    candidates = [
-        # Популярные пути в custom_nodes/ComfyUI-GGUF
-        ("nodes", "UnetLoaderGGUF"),
-        ("unet_loader_gguf", "UnetLoaderGGUF"),
-        ("nodes", "UNETLoaderGGUF"),
-    ]
-    last_exc: Exception | None = None
-    for mod_name, cls_name in candidates:
-        try:
-            module = __import__(mod_name)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            continue
-        cls = getattr(module, cls_name, None)
+    s = (spec or "auto").strip().lower()
+    if s == "auto":
+        return secondary
+    if s == "cuda:0":
+        return primary
+    if s == "cuda:1":
+        return secondary
+    if s == "cpu":
+        return torch.device("cpu") if torch is not None else "cpu"
+    # Fallback для любого другого значения: парсим torch.device,
+    # либо fallback на secondary без exception (вызывающий код ожидает device-like).
+    try:
+        if torch is not None:
+            return torch.device(s)
+    except Exception:  # noqa: BLE001
+        pass
+    return secondary
+
+
+def _get_city96_patcher_class():
+    """Ищет city96 UnetLoaderGGUF через registry ComfyUI.
+
+    Используем глобальный :data:`comfy.nodes.NODE_CLASS_MAPPINGS` —
+    туда ComfyUI собирает ВСЕ зарегистрированные custom node классы
+    при загрузке. Это устраняет баг с raw ``__import__("nodes")``, который
+    хватал либо наш собственный ``nodes.py``, либо ComfyUI root без
+    прямого атрибута ``UnetLoaderGGUF``.
+
+    Поддерживаем оба ID: ``UnetLoaderGGUF`` (текущий city96 main) и
+    ``UNETLoaderGGUF`` (legacy API).
+    """
+    try:
+        import nodes as comfy_root  # ComfyUI root: D:\\ComfyUI\\nodes.py
+    except Exception as exc:
+        raise RuntimeError(
+            f"comfy root 'nodes' модуль недоступен — запуск вне ComfyUI: {exc}"
+        ) from exc
+
+    mappings = getattr(comfy_root, "NODE_CLASS_MAPPINGS", None) or {}
+    if not mappings:
+        raise RuntimeError(
+            "NODE_CLASS_MAPPINGS пуст — ComfyUI ещё не зарегистрировал "
+            "custom_nodes. Убедись, что ComfyUI-GGUF склонирован и его "
+            "__init__.py лежит в custom_nodes/."
+        )
+
+    for class_id in ("UnetLoaderGGUF", "UNETLoaderGGUF"):
+        cls = mappings.get(class_id)
         if cls is not None:
             return cls
+
     raise RuntimeError(
-        "city96 ComfyUI-GGUF не найден; клонируйте "
-        "https://github.com/city96/ComfyUI-GGUF в custom_nodes/"
+        "city96 ComfyUI-GGUF не найден: ни 'UnetLoaderGGUF', ни "
+        "'UNETLoaderGGUF' не зарегистрированы в NODE_CLASS_MAPPINGS. "
+        "Клонируй https://github.com/city96/ComfyUI-GGUF в custom_nodes/ "
+        "(latest, не legacy)."
     )
 
 
@@ -192,6 +238,41 @@ def _install_cross_device_hook(module: Any, src_device: Any, dst_device: Any) ->
     return handle
 
 
+def _lock_inner_to(inner: Any) -> None:
+    """Risk #7 fix: monkey-patch ``inner.to(device)`` в no-op.
+
+    ComfyUI sampler в начале каждой KSampler-step вызывает
+    ``comfy.model_management.load_models_gpu([patcher])``, который
+    BLANKET-вызывает ``inner.to(patcher.load_device)`` без проверки
+    текущего device каждого параметра. После нашего ручного split
+    (blocks 22..43 на cuda:1) это всё равно перетащит split-блоки
+    обратно на ``load_device`` (= primary cuda:0) → OOM на 720p.
+
+    Делаем ``inner.to`` no-op'ом. Patch идемпотентный через marker
+    ``inner._ltx2_to_locked``. Оригинал сохраняем в
+    ``inner._ltx2_original_to`` для rollback в тестах / debug.
+
+    NB: лочим ТОЛЬКО bound ``inner.to`` (top-level module). Подмодули
+    (``inner.submodule.to``) сохраняют nn.Module class method — это OK,
+    sampler обычно зовёт ровно ``inner.to``.
+    """
+    try:
+        if getattr(inner, "_ltx2_to_locked", False):
+            return
+        inner._ltx2_original_to = inner.to  # type: ignore[attr-defined]
+
+        def _no_op_to(*args: Any, **kwargs: Any) -> Any:
+            """No-op ``.to()`` — sampler НЕ может blanket-перенести DiT."""
+            return inner
+
+        inner.to = _no_op_to  # type: ignore[method-assign]
+        inner._ltx2_to_locked = True  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        # Если патч не навесился — sampler драгает DiT обратно,
+        # graceful fallback (худший случай: OOM mid-sampling).
+        pass
+
+
 def _split_blocks_indices(strategy: str) -> tuple[int, ...]:
     """Возвращает индекс блока-разделителя для strategy.
 
@@ -238,7 +319,10 @@ def _build_patcher_for_load(unet_name: str, verbose: bool) -> Any:
 
 
 def hybrid_split_gguf(
-    gguf_name: str, strategy: str = "blocks_50_50", verbose: bool = False
+    gguf_name: str,
+    strategy: str = "blocks_50_50",
+    verbose: bool = False,
+    donor_device: str = "auto",
 ) -> Any:
     """Главная точка: GGUF → ModelPatcher с раскиданными по GPU блоками.
 
@@ -247,6 +331,30 @@ def hybrid_split_gguf(
       2. Классификация + .to(device) для каждого блока DiT.
       3. register_forward_hook на блоке-разделителе → hidden_states.to(dst_dev).
       4. Возврат ModelPatcher (R3-совместимый; LoRA/offload работают).
+
+    Новые kwargs (UI mirror GemmaHybrid — см. commit message):
+      donor_device ∈ {"auto","cuda:0","cuda:1","cpu"} — куда положить
+                     "вторичную" половину DiT / целиком DiT.
+                     CPU отврегается в INPUT_TYPES HybridSplitLoader
+                     (DiT не иожет быть на CPU во время sampling'а); если
+                     передан через programmatic call — WARN в verbose и движение
+                     вторичной половины пропускается (рull DiT off GPU →
+                     sampling stall). Используйте только cuda:auto/cuda:0/cuda:1.
+
+      NB: `eject_models` НЕ поддерживается для DiT (anti-feature):
+        - DiT вызывается каждый sampling-step. Offload DiT → CPU = PCIe
+          bottleneck и sampling stall.
+        - Risk #7 lock (.to() no-op) добавляет дополнительную причину: sampler
+          не смог бы re-load DiT обратно на GPU после eject.
+
+    Семантика donor_device по strategy:
+      blocks_50_50 / blocks_30_70 : primary_dev получает блоки [0..split_idx-1],
+                                   donor_dev получает блоки [split_idx..N-1].
+                                   forward_pre_hook на blocks[split_idx]
+                                   двигает hidden_states primary→donor.
+      pipeline : весь DiT целиком на donor_dev (default auto→secondary).
+      single_cuda0 : target=primary_dev (явный override, donor ignored).
+      single_cuda1 : target=donor_dev (default auto→secondary, но user override побеждает).
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy!r}; allowed: {STRATEGIES}")
@@ -261,27 +369,53 @@ def hybrid_split_gguf(
 
     # ── Шаг 2: target devices ───────────────────────────────────────────────
     primary_dev, secondary_dev = resolve_devices()
+    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_is_cpu = str(donor_dev).startswith("cpu")
+
+    # Defensive: cpu как donor для DiT — anti-feature. INPUT_TYPES HybridSplitLoader
+    # уже фильтрует cpu, но programmatic call мог бы прокинуть — fallback на secondary.
+    effective_donor = secondary_dev if donor_is_cpu else donor_dev
+    if donor_is_cpu and verbose:
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: donor_device='cpu' отвергнут для DiT — "
+            "DiT не может быть на CPU во время sampling'а. Fallback на secondary_dev."
+        )
+
     is_pipeline = strategy == "pipeline"
     is_single0 = strategy == "single_cuda0"
     is_single1 = strategy == "single_cuda1"
     splits = _split_blocks_indices(strategy)
 
-    # В ТЕКУЩЕЙ версии мы работаем через обёртку ModelPatcher.
-    # Strategy-логика:
-    #   pipeline    → весь DiT на secondary_dev (cuda:1)
-    #   single_cuda0→ весь DiT на primary_dev (cuda:0)
-    #   single_cuda1→ весь DiT на secondary_dev (cuda:1)
-    #   blocks_*    → split по выбранной границе
+    # Strategy-логика (обновлена для donor_device):
+    #   pipeline    → весь DiT на effective_donor (default auto→secondary=cuda:1)
+    #   single_cuda0→ весь DiT на primary_dev (явное имя, donor ignored)
+    #   single_cuda1→ весь DiT на effective_donor (user override над secondary)
+    #   blocks_*    → split: [0..split_idx-1]@primary, [split_idx..N-1]@effective_donor
     if is_single0:
         target_dev = primary_dev
     elif is_single1 or is_pipeline:
-        target_dev = secondary_dev
+        target_dev = effective_donor
     else:
         target_dev = None  # split mode — разные device для разных блоков
+
+    # N1 (review): degenerate guard — если user случайно поднял donor на primary,
+    # blocks_* / pipeline / single1 схлопываются в single_cuda0 silently.
+    if (
+        effective_donor == primary_dev
+        and not is_single0
+        and verbose
+    ):
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: effective_donor==primary_dev "
+            f"с strategy={strategy!r} → split дегенеративен (обе половины "
+            "DiT коллапсируют на cuda:0). Используйте single_cuda0 явно "
+            "или поменяйте donor_device на 'auto'/'cuda:1'."
+        )
+
     if verbose:
         print(
             f"[ComfyUI-LTX2-MultiGPU] strategy={strategy} "
-            f"primary={primary_dev} secondary={secondary_dev}"
+            f"primary={primary_dev} donor={effective_donor} (spec={donor_device!r})"
         )
 
     # ── Шаг 3: перенос блоков на нужные device ──────────────────────────────
@@ -316,29 +450,24 @@ def hybrid_split_gguf(
             with mm.cuda_device_context(primary_dev):
                 for i in range(0, split_idx):
                     blocks[i].to(primary_dev, non_blocking=False)
-                # embed/head слои — на primary
-                for name_prefix in DIFFUSION_EMBED_PREFIXES:
-                    _move_attrs_by_prefix(diffusion, name_prefix, primary_dev)
-                _move_attrs_by_prefix(
-                    diffusion, "model.diffusion_model.proj_out.", primary_dev
-                )
-                _move_attrs_by_prefix(
-                    diffusion, "model.diffusion_model.norm_out.", primary_dev
+                # embed/head слои — на primary (flat named_modules, no recurse)
+                _move_modules_with_prefix(
+                    diffusion, primary_dev, *EMBED_AND_HEAD_REL
                 )
                 mm.soft_empty_cache()
-            with mm.cuda_device_context(secondary_dev):
+            with mm.cuda_device_context(effective_donor):
                 for i in range(split_idx, len(blocks)):
-                    blocks[i].to(secondary_dev, non_blocking=False)
+                    blocks[i].to(effective_donor, non_blocking=False)
                 mm.soft_empty_cache()
 
             # srijithr forward_pre_hook на блоке split_idx —
-            # двигает входной hidden_states с primary_dev на secondary_dev
+            # двигает входной hidden_states с primary_dev на effective_donor
             # ДО forward на этом блоке. Не ломает autograd graph,
             # потому что hooks возвращает contract-modified inputs,
             # а не сам output.
             _remove_stored_hooks(patcher)
             handle = _install_cross_device_hook(
-                blocks[split_idx], primary_dev, secondary_dev
+                blocks[split_idx], primary_dev, effective_donor
             )
             if handle is not None:
                 _store_hook(patcher, handle)
@@ -355,25 +484,61 @@ def hybrid_split_gguf(
         patcher.load_device = primary_dev
         patcher.offload_device = primary_dev
 
+    # Risk #7 fix: блокируем blanket ``inner.to(load_device)`` от ComfyUI
+    # sampler'а, чтобы он не стянул split-блоки (cuda:1) обратно на primary
+    # между итерациями sampling'а. Без этого вызов ``model_load()`` в начале
+    # каждой KSampler-step утаскивает блоки на cuda:0 → OOM на 720p.
+    _lock_inner_to(inner)
+
     # Meta-флаг для downstream-нод: «split применён»
+    # Ассиметрия с ltx2_multigpu_gemma_split (Gemma) — DiT НЕ имеет поля
+    # eject_models: DiT вызывается каждый sampling-step, offload DiT → CPU
+    # = PCIe bottleneck и sampling stall. Forward_pre_hook остаётся primary→donor
+    # даже если блоки коллапсировали на primary (N1 guard выше).
     try:
         patcher.model_options["ltx2_multigpu_split"] = {
             "strategy": strategy,
             "primary": str(primary_dev),
             "secondary": str(secondary_dev),
+            "donor": str(effective_donor),
+            "donor_spec": donor_device,
             "block_split_index": splits[0] if splits else None,
         }
     except Exception:  # noqa: BLE001
         pass
 
     if verbose:
+        # Per-component allocation log для DiT HybridSplit (file size + target echo).
         try:
-            for i, d in enumerate([primary_dev, secondary_dev]):
-                if torch.cuda.is_available():
-                    free, total = torch.cuda.mem_get_info(int(d.index) if d.type == "cuda" else 0)
+            import os
+            full_path = folder_paths.get_full_path("diffusion_models", gguf_name) if folder_paths else None
+            unet_gb = os.path.getsize(full_path) / (1024 ** 3) if full_path else 0.0
+        except Exception:  # noqa: BLE001
+            unet_gb = 0.0
+        try:
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] dit_alloc = {unet_gb:.2f} GB file @ "
+                f"target={target_dev or effective_donor} "
+                f"(strategy={strategy} donor={donor_device!r})"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        # VRAM free after load (de-dup по индексам primary/donor)
+        try:
+            if torch.cuda.is_available():
+                seen_idx: set[int] = set()
+                for d in [primary_dev, effective_donor]:
+                    if d.type != "cuda":
+                        continue
+                    idx = int(d.index)
+                    if idx in seen_idx:
+                        continue
+                    seen_idx.add(idx)
+                    free, total = torch.cuda.mem_get_info(idx)
                     print(
-                        f"[ComfyUI-LTX2-MultiGPU] cuda:{int(d.index) if d.type=='cuda' else '?'}"
-                        f" free={free/1024**3:.2f} GB total={total/1024**3:.2f} GB"
+                        f"[ComfyUI-LTX2-MultiGPU] cuda:{idx} "
+                        f"free={free / 1024 ** 3:.2f} GB "
+                        f"total={total / 1024 ** 3:.2f} GB"
                     )
         except Exception:  # noqa: BLE001
             pass
@@ -421,116 +586,412 @@ def _remove_stored_hooks(patcher: Any) -> None:
 # УДАЛЕНА. Используем ТОЛЬКО per-patcher setattr через _store_hook.
 
 
-def _move_attrs_by_prefix(parent: Any, prefix: str, device: Any) -> None:
-    """Двигает на `device` только те direct-child'ы parent, чей module path
-    заканчивается на хвост prefix (последние 2 сегмента).
+# Relative qualnames (от корня ``diffusion`` модуля), матчащиеся
+# flat-циклом ``named_modules()``. ``transformer_blocks.*`` намеренно
+# отсутствует — блоки DiT обрабатываются отдельным циклом в
+# ``hybrid_split_gguf`` / ``apply_strategy``.
+EMBED_AND_HEAD_REL: tuple[str, ...] = (
+    "time_embed",
+    "adaln",
+    "adaln_single",
+    "patchify_proj",
+    "proj_in",
+    "norm_in",
+    "proj_out",
+    "norm_out",
+)
 
-    Пример:
-      prefix = "model.diffusion_model.time_embed."
-      tail = "time_embed."
-      → двигаются только children, чьё name содержит "time_embed." как suffix
-        в своём полном префиксе (через _walk_with_qualname).
+
+def _move_modules_with_prefix(
+    parent: Any, device: Any, *rel_prefixes: str
+) -> int:
+    """Двигает на ``device`` children ``parent``, чей qualname равен
+    ровно одному из ``rel_prefixes`` ИЛИ начинается с
+    ``rel_prefix + "."``.
+
+    Один проход ``parent.named_modules()`` — никакого рекурсивного dive
+    и никакого match'а по под-сегментам. На 22B DiT это на порядок
+    быстрее и безопаснее прежнего ``_move_attrs_by_prefix``.
+    Возвращает количество уникально перенесённых submodules.
+
+    NB: ``transformer_blocks.*`` намеренно НЕ матчится — блоки DiT
+    идут через отдельный цикл в ``hybrid_split_gguf``.
     """
-    # Последний токен prefix ("time_embed." → "time_embed.") используем как marker
-    tail = prefix.rstrip(".").split(".")[-1] if "." in prefix else prefix
-    for full_qualname, child in _walk_with_qualname(parent, "", ignore_top=False):
-        if not full_qualname:
+    if torch is None:
+        return 0
+    moved_ids: set[int] = set()
+    count = 0
+    for name, module in parent.named_modules():
+        if not name:  # пропустить сам parent
             continue
-        # Match если какой-то подсегмент равен tail
-        if any(seg == tail for seg in full_qualname.split(".")):
-            try:
-                child.to(device, non_blocking=False)
-            except Exception:  # noqa: BLE001
-                pass
+        matched = False
+        for rpfx in rel_prefixes:
+            if name == rpfx or name.startswith(rpfx + "."):
+                matched = True
+                break
+        if not matched:
+            continue
+        mid = id(module)
+        if mid in moved_ids:
+            continue  # идемпотентность: один nn.Module может встретиться
+            # несколько раз в named_modules() (наследуемые подмодули)
+        try:
+            module.to(device, non_blocking=False)
+            moved_ids.add(mid)
+            count += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return count
 
 
-def _walk_with_qualname(parent: Any, _prefix: str, ignore_top: bool = False):
-    """Yeld (qualname, module) для всех descendants. qualname — это
-    полный dotted-путь относительно root (например 'time_embed.linear_1')."""
-    for child_name, child in parent.named_children():
-        qn = f"{_prefix}{child_name}" if _prefix else child_name
-        yield qn, child
-        yield from _walk_with_qualname(child, qn + ".", False)
+def _looks_like_proj_path(name: str) -> bool:
+    """Распознаёт alternative naming для text_projection в Gemma pipeline.
+
+    Examples:
+      - "model.text_projection.weight"
+      - "model.proj.weight"  (some Gemma variants)
+      - "text_projection.weight"
+      - "model.projection.weight"
+      - "proj_out.weight"
+    """
+    n = name.lower()
+    return (
+        n.startswith("text_projection.")
+        or n.startswith("proj_out.")
+        or n.startswith("model.projection.")
+        or n.startswith("model.proj.")
+        or "/projection/" in n
+        or ".projection." in n
+        or n.endswith(".proj")
+    )
 
 
 def load_gemma_hybrid(
-    encoder_name: str, projection_name: str, verbose: bool = False
+    encoder_name: str,
+    projection_name: str,
+    verbose: bool = False,
+    donor_device: str = "auto",
+    eject_models: bool = False,
 ) -> Any:
-    """Gemma 12B FP4 → cuda:1, text_projection → cuda:0.
+    """Gemma 12B FP4 → donor_device, text_projection → cuda:0, wrapped в ModelPatcher.
 
-    ⚠️ Phase 3 stub. Вернуть правильный `comfy.sd.CLIP`-совместимый объект можно
-    только через GCP/Loaders, которые умеют строить Gemma3Adapter — а они пока
-    либо экспериментальные (`kkjais/ComfyUI-Gemma3`), либо недоступны в общем
-    ComfyUI workflow. Это честный NotImplementedError с roadmap.
+    PLAN §3.4 / MODEL_FACTS §6:
+        - text encoder (≈7.5 GB FP4) → donor_device
+        - text_projection (≈2.15 GB) → primary_dev (cuda:0)
 
-    Roadmap для Phase 3:
-      1. Прочитать safetensors Gemma 3 12B FP4 → state_dict.
-      2. Прочитать safetensors text_projection → state_dict.
-      3. Через `comfy.text_encoder_loader.GEMMA3` или kkjais' adapter
-         построить nn.Module (encoder@cuda:1, projection@cuda:0).
-      4. Обёрнуть в ModelPatcher (R3).
-      5. Вернуть patcher — sampler подхватит естественно.
+    Новые kwargs (UI mirror DualCLIPLoaderDisTorch2MultiGPU):
+      donor_device ∈ {"auto","cuda:0","cuda:1","cpu"} — куда грузить encoder.
+                     auto ⇒ secondary (default cuda:1 в dual-GPU config).
+                     cpu  ⇒ encoder остаётся на CPU; параметры text_projection
+                            всё равно поднимаются на primary для sampling'а.
+      eject_models=True ⇒ patcher.offload_device=CPU + mm.soft_empty_cache().
+                     NB: под Risk #7 lock (.to() no-op) sampler не сможет
+                         blanket-поднять параметры projection обратно на cuda:0
+                         после eject ⇒ возможен лёгкий re-conditioning stall.
+                         Используйте только если уверены.
+
+    Использует встроенный `comfy.sd.load_clip(ckpt_paths=[enc, proj])` для
+    Gemma3/Gemma4 (master ComfyUI c поддержкой с late 2025). При успешной
+    загрузке делит веса через named_parameters/named_buffers walk и добавляет
+    forward_pre_hook на parent-module text_projection для переноса
+    hidden_states donor_dev→primary_dev (srijithr-паттерн).
+
+    Returns: ModelPatcher-совместимый объект (R3, маркирован для sampler).
+
+    Raises:
+        RuntimeError: если ComfyUI API не поддерживает Gemma / FP4; если
+            safetensors не распознаны; если Gemma encoder не найден в
+            `text_encoders/`.
     """
-    raise NotImplementedError(
-        "load_gemma_hybrid — Phase 3 task. См. docstring для roadmap. "
-        "Phase 2 покрывает только DiT split. Gemma adapter — отдельная задача."
-    )
+    if folder_paths is None or torch is None:
+        raise RuntimeError("load_gemma_hybrid требует ComfyUI runtime")
+
+    primary_dev, secondary_dev = resolve_devices()
+    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_is_cpu = (str(donor_dev).startswith("cpu"))
 
     if verbose:
         print(
-            f"[ComfyUI-LTX2-MultiGPU] gemma={encoder_name} proj={projection_name}"
+            f"[ComfyUI-LTX2-MultiGPU] GemmaHybrid: encoder={encoder_name} @ "
+            f"{donor_dev} (donor_device={donor_device!r}), "
+            f"projection={projection_name} @ {primary_dev}, "
+            f"eject_models={eject_models}"
         )
 
-    primary_dev, secondary_dev = resolve_devices()
+    # Eject + Risk #7 lock conflict warning.
+    if eject_models and verbose:
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: eject_models=True активирует "
+            "offload_device=CPU. NB: под Risk #7 lock (.to() no-op) sampler "
+            "не сможет blanket re-load projection на cuda:0 после eject. "
+            "Если сценарий — single-pass encoding без re-conditioning, "
+            "OK; иначе оставьте False."
+        )
 
+    # ── Шаг 1: импорт comfy internals (R6: тяжёлые импорты в try/except) ─────
     try:
         from comfy import sd as comfy_sd  # type: ignore[import-not-found]
+        from comfy import model_management as mm  # type: ignore[import-not-found]
+        from comfy import model_patcher as comfy_mp  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("comfy.sd недоступен") from exc
+        raise RuntimeError(
+            f"comfy sd/model_management/model_patcher недоступны: {exc}"
+        ) from exc
 
-    # ── text encoder (Gemma 12B FP4) → cuda:1 ───────────────────────────────
+    # ── Шаг 2: получить file paths из ComfyUI folder_paths ───────────────────
     enc_path = folder_paths.get_full_path("text_encoders", encoder_name)
-    state_enc = comfy_sd.load_state_dict_for_model(enc_path) if hasattr(
-        comfy_sd, "load_state_dict_for_model"
-    ) else None
-
-    if state_enc is None:
-        # Fallback: просто читаем safetensors напрямую → dict[fp32/fp16 tensor]
-        from safetensors import safe_open  # type: ignore[import-not-found]
-        state_enc = {}
-        with safe_open(enc_path, framework="pt", device=str(secondary_dev)) as f:
-            for key in f.keys():
-                state_enc[key] = f.get_tensor(key).to(secondary_dev)
-
-    # ── text_projection → cuda:0 ─────────────────────────────────────────────
     proj_path = folder_paths.get_full_path("text_encoders", projection_name)
-    if hasattr(comfy_sd, "load_state_dict_for_model"):
-        state_proj = comfy_sd.load_state_dict_for_model(proj_path)
-    else:
-        from safetensors import safe_open  # type: ignore[import-not-found]
-        state_proj = {}
-        with safe_open(proj_path, framework="pt", device=str(primary_dev)) as f:
-            for key in f.keys():
-                state_proj[key] = f.get_tensor(key).to(primary_dev)
+    if not enc_path:
+        raise FileNotFoundError(
+            f"Gemma encoder '{encoder_name}' не найден в text_encoders/"
+        )
+    if not proj_path:
+        raise FileNotFoundError(
+            f"text_projection '{projection_name}' не найден в text_encoders/"
+        )
 
-    # Concrete text-encoder module: попробуем вызвать ComfyUI build path,
-    # если недоступен — вернём минимальный dict-объект, который compat-layer
-    # DualCLIPLoader сможет разобрать.
+    # ── Шаг 3: build CLIP через comfy.sd.load_clip(ckpt_paths=[enc, proj]) ──
+    # Если load_clip отсутствует — клиент на старой версии ComfyUI; raise с
+    # понятным сообщением.
+    if not hasattr(comfy_sd, "load_clip"):
+        raise RuntimeError(
+            "comfy.sd.load_clip отсутствует — требуется современный ComfyUI "
+            "с Gemma3/Gemma4 support. Обновитесь: cd ComfyUI && git pull"
+        )
+
     try:
-        from comfy.sd import CLIPType  # type: ignore[import-not-found]
-    except Exception:  # noqa: BLE001
-        CLIPType = None  # type: ignore[assignment]
+        clip_obj = comfy_sd.load_clip(
+            ckpt_paths=[enc_path, proj_path],
+            embedding_directory=None,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"comfy.sd.load_clip failed for Gemma hybrid split: {exc}. "
+            f"Возможные причины: "
+            f"(a) FP4 weights без comfy.ops FP4 support; "
+            f"(b) safetensors не из Gemma 3 / Gemma 4 family; "
+            f"(c) ComfyUI version ниже Gemma3 merge (late-2025 master)."
+        ) from exc
+    if clip_obj is None:
+        raise RuntimeError(
+            "comfy.sd.load_clip вернул None — Gemma не распознана ни по одному из "
+            "файлов. Проверьте, что encoder_name — Gemma3/4 safetensors, "
+            "projection_name — отдельный файл или integrated layer."
+        )
 
-    out: dict[str, Any] = {
-        "encoder_state": state_enc,
-        "projection_state": state_proj,
-        "primary_dev": str(primary_dev),
-        "secondary_dev": str(secondary_dev),
-        "clip_type": CLIPType.GEMMA if CLIPType is not None else None,
-    }
+    # ── Шаг 4: parameter-level split (text_projection@primary, rest@secondary) ──
+    # Parameter-level move() надёжнее module-level: nested nn.Module hierarchy
+    # не мешает разделению. Каждый параметр move()'ed отдельно под правильным
+    # cuda_device_context — PCIe-safe без race-conditions.
+    patcher_obj = clip_obj.patcher if hasattr(clip_obj, "patcher") else clip_obj
+    inner = (
+        patcher_obj.model  # type: ignore[union-attr]
+        if hasattr(patcher_obj, "model") else patcher_obj
+    )
+    if inner is None:
+        raise RuntimeError(
+            "comfy.sd.load_clip вернул CLIP без .model attribute — невозможно "
+            "применить device split. ComfyUI master API contract нарушен."
+        )
+
+    proj_param_count = 0
+    encoder_param_count = 0
+
+    # Parametры projection → primary_dev
+    with mm.cuda_device_context(primary_dev):
+        for pname, p in list(inner.named_parameters()):
+            if "text_projection" not in pname.lower() and not _looks_like_proj_path(pname):
+                continue
+            try:
+                p.data = p.data.to(primary_dev, non_blocking=False)
+                proj_param_count += 1
+            except Exception as exc:  # noqa: BLE001
+                if verbose:
+                    print(
+                        f"[ComfyUI-LTX2-MultiGPU] WARN: proj param {pname!r} → "
+                        f"{primary_dev} failed: {exc}"
+                    )
+
+    # Parametры encoder → donor_dev
+    # Если donor_device='cpu' — пропускаем move: encoder остаётся на исходном
+    # device, куда его положил comfy.sd.load_clip (CPU by default).
+    if not donor_is_cpu:
+        with mm.cuda_device_context(donor_dev):
+            for pname, p in list(inner.named_parameters()):
+                if "text_projection" in pname.lower() or _looks_like_proj_path(pname):
+                    continue
+                try:
+                    p.data = p.data.to(donor_dev, non_blocking=False)
+                    encoder_param_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    if verbose:
+                        print(
+                            f"[ComfyUI-LTX2-MultiGPU] WARN: encoder param {pname!r} → "
+                            f"{donor_dev} failed: {exc}"
+                        )
+    elif verbose:
+        encoder_param_count = sum(
+            1 for _ in inner.named_parameters()
+            if "text_projection" not in _.lower()
+            and not _looks_like_proj_path(_)
+        )
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] donor_device=cpu — {encoder_param_count} "
+            f"encoder params остаются на исходном device (без .to())."
+        )
+
+    # Buffers (key embedding_table, registered buffers и т.д.)
+    with mm.cuda_device_context(primary_dev):
+        for bname, b in list(inner.named_buffers()):
+            if "text_projection" not in bname.lower() and not _looks_like_proj_path(bname):
+                continue
+            try:
+                b.data = b.data.to(primary_dev, non_blocking=False)
+            except Exception:  # noqa: BLE001
+                pass
+    if not donor_is_cpu:
+        with mm.cuda_device_context(donor_dev):
+            for bname, b in list(inner.named_buffers()):
+                if "text_projection" in bname.lower() or _looks_like_proj_path(bname):
+                    continue
+                try:
+                    b.data = b.data.to(donor_dev, non_blocking=False)
+                except Exception:  # noqa: BLE001
+                    pass
+
     if verbose:
-        print("[ComfyUI-LTX2-MultiGPU] GemmaHybrid ready: encoder@cuda:1, proj@cuda:0")
-    return out
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] Split: encoder={encoder_param_count} params "
+            f"@ {donor_dev}, proj={proj_param_count} params @ {primary_dev}"
+        )
+
+    # ── Шаг 5: forward_pre_hook на proj parent (cuda:1→cuda:0 hidden_states) ─
+    # GemmaPipeline forward call sequence:
+    #   embed_tokens (cuda:1) → layers 0..N (cuda:1) → text_projection (cuda:0)
+    # Последний hidden_states выходит с cuda:1 (encoder), proj ждёт с cuda:0.
+    # Без hook'а PyTorch кинет RuntimeError при .to() mismatch.
+    def _move_inputs_to_primary(_mod: Any, inputs: Any) -> Any:
+        if torch is None:
+            return inputs
+        if isinstance(inputs, torch.Tensor):
+            return inputs.to(primary_dev, non_blocking=True)
+        if isinstance(inputs, (tuple, list)):
+            return type(inputs)(
+                x.to(primary_dev, non_blocking=True) if isinstance(x, torch.Tensor) else x
+                for x in inputs
+            )
+        return inputs
+
+    proj_parent_module = None
+    for name, mod in inner.named_modules():
+        children_names = {cn for cn, _ in mod.named_children()}
+        if any(
+            cn == "text_projection"
+            or cn.endswith(".text_projection")
+            for cn in children_names
+        ):
+            proj_parent_module = mod
+            break
+
+    if (
+        proj_parent_module is not None
+        and torch is not None
+        and hasattr(proj_parent_module, "register_forward_pre_hook")
+    ):
+        handle = proj_parent_module.register_forward_pre_hook(
+            _move_inputs_to_primary
+        )
+        if handle is not None:
+            # Per-patcher cleanup, srijithr паттерн: запомним чтобы можно было
+            # снять при apply_strategy/cleanup.
+            try:
+                _store_hook(patcher_obj, handle)
+            except Exception:  # noqa: BLE001
+                pass  # hook останется активным до GC — acceptable fallback
+
+    # ── Шаг 6: final ModelPatcher wrap (R3 R4) ──────────────────────────────
+    offload_dev = torch.device("cpu") if eject_models else primary_dev
+    if hasattr(patcher_obj, "load_device") and hasattr(patcher_obj, "model_options"):
+        final_patcher = patcher_obj
+        try:
+            final_patcher.load_device = primary_dev
+            final_patcher.offload_device = offload_dev
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        # Fallback: завернуть в новый ModelPatcher (defensive, не должен
+        # срабатывать в стандартном ComfyUI пути)
+        final_patcher = comfy_mp.ModelPatcher(
+            model=inner,
+            load_device=primary_dev,
+            offload_device=offload_dev,
+        )
+
+    # Meta для downstream-нод (для sampler-ноды "see split info")
+    try:
+        final_patcher.model_options["ltx2_multigpu_gemma_split"] = {
+            "encoder": str(donor_dev),
+            "encoder_spec": donor_device,
+            "projection": str(primary_dev),
+            "encoder_param_count": encoder_param_count,
+            "proj_param_count": proj_param_count,
+            "eject_models": eject_models,
+            "offload_device": str(offload_dev),
+            "model_class": type(inner).__name__,
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Risk #7 fix: блокируем .to() чтобы ``comfy.sd.load_clip`` или sampler
+    # не «упростили» hybrid projection+encoder split при следующей загрузке
+    # (Gemma encoder всё ещё на cuda:1, projection на cuda:0).
+    _lock_inner_to(inner)
+
+    mm.soft_empty_cache()
+
+    if verbose:
+        # Per-component allocation log
+        # Используем file size напрямую (dual-fp4/bf16 storages варьируются,
+        # но наш contract: encoder@donor, proj@primary, offload=eject?cpu:primary).
+        try:
+            import os
+            enc_gb = os.path.getsize(enc_path) / (1024 ** 3) if enc_path else 0.0
+            proj_gb = os.path.getsize(proj_path) / (1024 ** 3) if proj_path else 0.0
+        except Exception:  # noqa: BLE001
+            enc_gb = proj_gb = 0.0
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] encoder_alloc = {enc_gb:.2f} GB file @ "
+            f"{donor_dev} ({encoder_param_count} params moved)"
+        )
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] proj_alloc = {proj_gb:.2f} GB file @ "
+            f"{primary_dev} ({proj_param_count} params moved)"
+        )
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] eject_models={eject_models} "
+            f"offload_target={offload_dev}"
+        )
+        # VRAM free after load
+        try:
+            if torch.cuda.is_available():
+                seen_idx: set[int] = set()
+                for d in [primary_dev, donor_dev]:
+                    if d.type != "cuda":
+                        continue
+                    idx = int(d.index)
+                    if idx in seen_idx:
+                        continue
+                    seen_idx.add(idx)
+                    free, total = torch.cuda.mem_get_info(idx)
+                    print(
+                        f"[ComfyUI-LTX2-MultiGPU] cuda:{idx} "
+                        f"free={free / 1024 ** 3:.2f} GB "
+                        f"total={total / 1024 ** 3:.2f} GB"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return final_patcher
 
 
 def apply_strategy(patcher: Any, strategy: str) -> Any:
@@ -620,5 +1081,11 @@ def apply_strategy(patcher: Any, strategy: str) -> Any:
         }
     except Exception:  # noqa: BLE001
         pass
+
+    # Risk #7 fix: при смене стратегии lock .to() надо переустановить.
+    # Если до этого был разный inner ref (apply_strategy с patcher от другой
+    # node-call) — без явного вызова sampler стянет блоки обратно.
+    _lock_inner_to(inner)
+
     mm.soft_empty_cache()
     return patcher

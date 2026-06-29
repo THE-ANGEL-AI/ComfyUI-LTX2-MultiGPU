@@ -33,6 +33,11 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
     Возвращает (R3) ModelPatcher-совместимый объект — совместим с LoRA,
     offload, sampler. Реализация сплита лежит в core/gguf_split.py.
+
+    UI mirror GemmaHybrid: добавлен `donor_device` (auto/cuda:0/cuda:1).
+    NB: `eject_models` НЕ добавляется — DiT вызывается каждый sampling-step,
+    offload DiT → CPU = PCIe death и sampling stall. cpу как donor_device
+    отвергается уже в INPUT_TYPES (выбор ограничен 3-мя опциями).
     """
 
     NODE_ID = "LTX2_MultiGPU_HybridSplitLoader"
@@ -44,6 +49,10 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("model",)
+
+    # DiT-specific donor_device: НЕТ 'cpu' — DiT не может быть на CPU во время sampling.
+    # Решение принято в design-discussion: см. commit message + docstring class.
+    _DONOR_DEVICE_CHOICES_DIT: tuple[str, ...] = ("auto", "cuda:0", "cuda:1")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
@@ -62,6 +71,8 @@ class LTX2_MultiGPU_HybridSplitLoader:
                     ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
                     {"default": "blocks_50_50"},
                 ),
+                # DiT-specific: только cuda:0/cuda:1 (cpu нельзя — sampling требует GPU).
+                "donor_device": (cls._DONOR_DEVICE_CHOICES_DIT, {"default": "auto"}),
                 "verbose_log": ("BOOLEAN", {"default": False}),
             }
         }
@@ -70,6 +81,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
         self,
         unet_name: str,
         split_strategy: str,
+        donor_device: str,
         verbose_log: bool,
     ) -> tuple:
         """Делегирует в core.gguf_split.hybrid_split_gguf (R4: tuple-возврат)."""
@@ -85,6 +97,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
                 gguf_name=unet_name,
                 strategy=split_strategy,
                 verbose=verbose_log,
+                donor_device=donor_device,
             )
         except NotImplementedError as exc:
             raise RuntimeError(
@@ -93,7 +106,8 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
         if verbose_log:
             print(
-                f"[ComfyUI-LTX2-MultiGPU] Loaded {unet_name} with strategy {split_strategy}"
+                f"[ComfyUI-LTX2-MultiGPU] Loaded {unet_name} with strategy "
+                f"{split_strategy}, donor={donor_device}"
             )
 
         return (model_patcher,)
@@ -103,7 +117,18 @@ class LTX2_MultiGPU_HybridSplitLoader:
 #  Узел 2. LTX2_MultiGPU_GemmaHybridLoader
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_GemmaHybridLoader:
-    """Жёсткая загрузка Gemma 3 12B FP4: encoder → cuda:1, projection → cuda:0."""
+    """Жёсткая загрузка Gemma 3 12B FP4: encoder → donor_device, projection → cuda:0.
+
+    UI совместим с DualCLIPLoaderDisTorch2MultiGPU (см. скриншот пользователя):
+      donor_device   куда грузить encoder (auto / cuda:0 / cuda:1 / cpu).
+                     auto ⇒ mm-derived secondary (cuda:1 в dual-GPU config).
+      eject_models   True ⇒ после load: offload_device=CPU + soft_empty_cache.
+                     NB: под Risk #7 lock (.to() no-op) sampler не сможет
+                     re-load projection обратно на cuda:0 после eject —
+                     используйте только если уверены.
+      verbose_log    печатать per-component allocation log (encoder/proj GB,
+                     VRAM free до/после).
+    """
 
     NODE_ID = "LTX2_MultiGPU_GemmaHybridLoader"
     DISPLAY_NAME = "LTX-2 Gemma Hybrid Loader"
@@ -114,6 +139,11 @@ class LTX2_MultiGPU_GemmaHybridLoader:
 
     RETURN_TYPES = ("CLIP",)
     RETURN_NAMES = ("clip",)
+
+    # Donor-device options mirror DualCLIPLoaderDisTorch2MultiGPU. Hardcoded
+    # (cuda:0/cuda:1) — INPUT_TYPES вызывается до загрузки torch-стекa,
+    # rompute `torch.cuda.device_count()` здесь ненадёжен.
+    _DONOR_DEVICE_CHOICES: tuple[str, ...] = ("auto", "cuda:0", "cuda:1", "cpu")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
@@ -133,6 +163,8 @@ class LTX2_MultiGPU_GemmaHybridLoader:
             "required": {
                 "clip_name1": enc_opts,
                 "projection_name": proj_opts,
+                "donor_device": (cls._DONOR_DEVICE_CHOICES, {"default": "auto"}),
+                "eject_models": ("BOOLEAN", {"default": False}),
                 "verbose_log": ("BOOLEAN", {"default": False}),
             }
         }
@@ -141,20 +173,21 @@ class LTX2_MultiGPU_GemmaHybridLoader:
         self,
         clip_name1: str,
         projection_name: str,
+        donor_device: str,
+        eject_models: bool,
         verbose_log: bool,
     ) -> tuple:
         from core.gguf_split import load_gemma_hybrid
 
-        try:
-            clip = load_gemma_hybrid(
-                encoder_name=clip_name1,
-                projection_name=projection_name,
-                verbose=verbose_log,
-            )
-        except NotImplementedError as exc:
-            raise RuntimeError(
-                f"ComfyUI-LTX2-MultiGPU: {exc}"
-            ) from exc
+        # load_gemma_hybrid raises RuntimeError с понятными причинами
+        # (усл.). Не мапим в RuntimeError повторно — propagate as is.
+        clip = load_gemma_hybrid(
+            encoder_name=clip_name1,
+            projection_name=projection_name,
+            verbose=verbose_log,
+            donor_device=donor_device,
+            eject_models=eject_models,
+        )
 
         return (clip,)
 
@@ -191,11 +224,13 @@ class LTX2_MultiGPU_MemoryDiagnostics:
         gemma_name: str,
         purge_cache: bool,
     ) -> tuple:
-        """R4: FUNCTION возвращает tuple длины len(RETURN_TYPES).
+        """R4: V1 dict-контракт для нод с ui preview.
 
-        Контракт R4 + V1 OUTPUT_NODE:
-          1-й элемент tuple = STRING (return value, идёт в downstream)
-          2-й элемент tuple = dict с {ui: {...}} для превью в frontend
+        Возвращает ``{"ui": {...}, "result": (...)}``, где длина result
+        строго равна ``len(RETURN_TYPES)``. ComfyUI ``execution.py``
+        использует ``result`` и ``ui`` как два раздельных поля —
+        возврат 2-tuple ``(report, {"ui": ...})`` ломал анпак выходов
+        по схеме R4 (``ValueError: too many values to unpack``).
         """
         from core.memory_tracker import estimate_vram_budget
 
@@ -205,7 +240,7 @@ class LTX2_MultiGPU_MemoryDiagnostics:
             purge_cache=purge_cache,
         )
         print(f"[ComfyUI-LTX2-MultiGPU]\n{report}")
-        return (report, {"ui": {"report": [report]}})
+        return {"ui": {"report": [report]}, "result": (report,)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

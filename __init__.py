@@ -31,6 +31,11 @@ def _build_config() -> None:
             module = importlib.import_module(mod_name)
         except Exception as exc:  # noqa: BLE001 — широкий except защищает пакет от сбоя
             print(f"[ComfyUI-LTX2-MultiGPU] Failed to import '{mod_name}': {exc}")
+            # Полный traceback — иначе в консоли ComfyUI видна только
+            # короткая строка exc и причина сбоя теряется (R6 хоть и
+            # защищает пакет, но скрывать traceback — это анти-паттерн).
+            import traceback as _tb
+            _tb.print_exc()
             continue
 
         # Собираем безопасные ссылки; битые классы не ломают пакет
