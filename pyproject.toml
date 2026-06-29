@@ -1,0 +1,30 @@
+[project]
+name = "ComfyUI-LTX2-MultiGPU"
+description = "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2x T4 (Kaggle). Replaces ComfyUI-MultiGPU DisTorch2 regex splitting with explicit block-aware sharding and forward-hook hidden-state transfer."
+version = "0.1.0"
+license = "MIT"
+authors = [
+    { name = "The Angel Studio", email = "gi.the.angel@gmail.com" }
+]
+keywords = ["ltx", "ltx2", "video", "multi-gpu", "gguf", "kaggle", "t4", "split"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
+Issues = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/issues"
+
+# ComfyUI Registry conventions
+[tool.comfy]
+Publisher = "The Angel Studio"
+PublisherEmail = "gi.the.angel@gmail.com"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["nodes"]
+packages = ["core", "."]

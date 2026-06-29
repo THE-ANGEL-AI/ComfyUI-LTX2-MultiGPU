@@ -1,0 +1,6 @@
+# ComfyUI-LTX2-MultiGPU — externa dependencies
+# torch и comfy поставляет сам ComfyUI — НЕ дублировать тут.
+# Версии — pinned только минимально; pip выберет совместимые.
+
+gguf>=0.10.0
+safetensors>=0.4.0
