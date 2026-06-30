@@ -1,0 +1,86 @@
+# Smoke CI — быстрый sanity-check на push'ах в main и PR'ах
+#
+# Что делает:
+#   1. py_compile — синтаксический / compile-уровневый smoke-test
+#      на матрице Python 3.10 / 3.11 / 3.12 для forward-compat проверки
+#   2. import-check — корректность runtime-import графа через прямой
+#      `import nodes` (то, что ComfyUI делает при добавлении ноды в
+#      `custom_nodes/` при загрузке пакета).
+#
+# Зачем: ловит регрессии ДО merge'а в `main`. Без этого пользователи
+# узнают о сломанной ноде через issue-tracker (`ImportError` при загрузке
+# `custom_nodes/ComfyUI-LTX2-MultiGPU/...`).
+#
+# Cost: ~ 200 МБ pip-кэш (CPU-only torch) + ~ 5 МБ project deps
+# после первой прогонки. ~ 30-60 секунд на job.
+
+name: Smoke CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:           # ручной триггер для ad-hoc запуска
+
+# Cancel prev in-progress runs in same PR ref — экономит CI-minutes
+# когда contributor коммитит push после force-push.
+concurrency:
+  group: ci-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read               # только read; никаких write-доступов
+
+jobs:
+  smoke-test:
+    name: Python ${{ matrix.python-version }} smoke-test
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false         # один упавший Python не отменяет другие
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install runtime dependencies (CPU-only torch + project deps)
+        # CPU-only torch — ~ 200 МБ (вместо ~ 3 ГБ для CUDA-варианта).
+        # Smoke-test НЕ требует реальный CUDA: torch-вызовы обёрнуты в
+        # `if torch.cuda.is_available()` (defensive) в nodes.py /
+        # core/gguf_split.py. CPU-only достаточно для проверки import-графа.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -r requirements.txt
+
+      - name: py_compile — syntax + byte-compile sanity
+        # Должен пройти без stderr-output и exit-code 0 (signal green).
+        # Если хоть один файл не парсится — fail-fast на этой matrix-комбинации.
+        run: |
+          set -e
+          python -m py_compile __init__.py
+          python -m py_compile nodes.py
+          python -m py_compile core/gguf_split.py
+          python -m py_compile core/gguf_reader.py
+          python -m py_compile core/memory_tracker.py
+          echo ""
+          echo "py_compile passed on Python ${{ matrix.python-version }}"
+
+      - name: import-check — module-graph integrity (mirror of ComfyUI load)
+        # Зеркало того, что ComfyUI делает при сканировании custom_nodes/.
+        # Если `import nodes` падает здесь — он упадёт и у пользователя при
+        # запуске ComfyUI.
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); import nodes; print('import-check OK on Python ${{ matrix.python-version }}')"
