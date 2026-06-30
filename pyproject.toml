@@ -26,15 +26,21 @@ Issues = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/issues"
 
 # ComfyUI Registry conventions (https://docs.comfy.org/registry/specifications)
 #
-# ComfyUI Manager читает author + name + PublisherId для атрибуции.
-# Все три поля должны указывать на THE-ANGEL-AI, иначе Manager
-# показывает чужое авторство (dreamfast) из кеша custom-node-list.json.
+# ⚠️ ComfyUI Manager читает центральную базу custom-node-list.json для
+#    click-through URL — локальный pyproject.toml НЕ переопределяет её.
+#    Чтобы ссылка вела на THE-ANGEL-AI репо, нужно зарегистрировать
+#    пакет в ComfyUI-Manager через PR:
+#    https://github.com/Comfy-Org/ComfyUI-Manager
+#
+# Поля author + name + PublisherId — для атрибуции в Manager UI.
+# reference — запасной URL для клика (читается НЕ всеми версиями).
 [tool.comfy]
 PublisherId = "THE-ANGEL-AI"
 DisplayName = "LTX-2 MultiGPU"
 author = "THE-ANGEL-AI"
 name = "ComfyUI-LTX2-MultiGPU"
 Icon = ""
+reference = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
 requires-comfyui = ">=0.3.0"
 
 [build-system]
