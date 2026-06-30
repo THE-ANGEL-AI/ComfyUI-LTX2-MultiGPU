@@ -43,20 +43,21 @@
 
 ## Что в коробке
 
-Шесть нод появятся в разделе **Add Node → LTX-2 MultiGPU**:
+Семь нод появятся в разделе **Add Node → THE-ANGEL-AI**:
 
 | Технический ключ (для workflow_api.json) | Отображение в меню | Что делает простыми словами | Чем заменяет |
 |---|---|---|---|
-| `LTX2_MultiGPU_HybridSplitLoader` | **Разделитель модели (2 GPU)** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
-| `LTX2_MultiGPU_GemmaHybridLoader` | **Загрузчик промптов (Gemma 3)** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
-| `LTX2_MultiGPU_MemoryDiagnostics` | **Диагностика видеопамяти** | Перед запуском считает VRAM/RAM бюджет, авто-выбирает стратегию, читает реальный quant из GGUF header | — |
-| `LTX2_MultiGPU_DeviceStrategy` | **Переключатель стратегии** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
-| `LTX2_MultiGPU_VRAMParking` | **Парковка видеопамяти** | Временно убирает DiT блоки на CPU между Pass 1 и Pass 2, освобождая VRAM для VAE/upscale | — |
-| `LTX2_MultiGPU_SageAttention` | **Патч SageAttention (T4)** | Ускоряет внимание ~1.5× через квантованное внимание (INT8 QK^T + FP16 PV) для Turing SM75 | — |
+| `LTX2_MultiGPU_HybridSplitLoader` | 🔀 **Разделитель DiT (2×GPU)** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
+| `LTX2_MultiGPU_GemmaHybridLoader` | 📝 **Dual CLIP Загрузчик (Gemma 3)** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
+| `LTX2_MultiGPU_MemoryDiagnostics` | 🩺 **Диагностика VRAM** | Перед запуском считает VRAM/RAM бюджет, авто-выбирает стратегию, читает реальный quant из GGUF header | — |
+| `LTX2_MultiGPU_DeviceStrategy` | ⚙️ **Стратегия GPU (hot-switch)** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
+| `LTX2_MultiGPU_VRAMParking` | 🅿️ **Парковка DiT (VRAM↔CPU)** | Временно убирает DiT блоки на CPU между Pass 1 и Pass 2, освобождая VRAM для VAE/upscale | — |
+| `LTX2_MultiGPU_SageAttention` | ⚡ **SageAttention (T4 турбо)** | Ускоряет внимание ~1.5× через квантованное внимание (INT8 QK^T + FP16 PV) для Turing SM75 | — |
+| `LTX2_MultiGPU_VAELoader` | 🖼️ **VAE Загрузчик (GPU)** | Загружает VAE с выбором GPU (auto/cuda:0/cuda:1/cpu) — не зависит от чекпоинта | `CheckpointLoaderSimple` (для VAE) |
 
-> 💡 **Привязка в workflow:** названия в workflow_api.json не менялись — по-прежнему левый столбец из таблицы. Русские слова из второго столбца нужны только чтобы быстро найти ноду в меню глазами.
+> 💡 **Привязка в workflow:** названия в workflow_api.json не менялись — по-прежнему левый столбец из таблицы. Русские имена с эмодзи из второго столбца нужны только чтобы быстро найти ноду в меню глазами.
 >
-> 🧪 **Готовые воркфлоу:** лежат в папке [`example_workflows/`](example_workflows/) — полный 2-pass пайплайн, strategy switch demo, diagnostics-first.
+> 🧪 **Готовые воркфлоу:** лежат в папке [`example_workflows/`](example_workflows/) — полный 2-pass пайплайн (6 из 7 нод), strategy switch demo (6 из 7 нод), diagnostics-first.
 
 ---
 
@@ -92,7 +93,7 @@ cd D:\ComfyUI\custom_nodes
 git clone https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU.git
 cd ComfyUI-LTX2-MultiGPU
 pip install -r requirements.txt
-# Перезапустите ComfyUI. Четыре ноды появятся в "Add Node → LTX-2 MultiGPU".
+# Перезапустите ComfyUI. Семь нод появятся в "Add Node → THE-ANGEL-AI".
 ```
 
 **Linux / Kaggle / Colab:**
@@ -122,10 +123,12 @@ pip install -r requirements.txt
 1. **Положите модели** туда, где ComfyUI их ждёт:
 
    ```
-   models/diffusion_models/ltx-2.3-Q6_K.gguf
-   models/text_encoders/gemma-3-12b-it-FP4.safetensors
-   models/text_encoders/gemma-3-12b-text_projection.safetensors
+   models/diffusion_models/ltx-2.3-UD-Q4_K_M.gguf
+   models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+   models/vae/ltx_video_2_3_vae.safetensors
    ```
+
+   > ⚡ **Авто-загрузка:** запустите `python scripts/download_models.py` — скрипт сам скачает все 3 модели (~21.6 GB) в правильные папки. `--dry-run` покажет что будет скачано без загрузки.
 
 2. **Замените два ваших лоадера** — вместо `UnetLoaderGGUFDisTorch2MultiGPU` поставьте **LTX-2 Hybrid Split Loader**, а вместо `DualCLIPLoaderDisTorch2MultiGPU` — **LTX-2 Gemma Hybrid Loader**.
 
@@ -246,7 +249,10 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 - `core/gguf_split.py` — GGUF-сплиттер + установка forward-хука + apply_strategy,
 - `core/memory_tracker.py` — Kaggle Edition: quant-aware VRAM/RAM расчёт + auto-strategy,
 - `core/vram_parking.py` — парковка DiT блоков на CPU между проходами,
-- `core/sage_attention.py` — интеграция SageAttention-SM75 для T4.
+- `core/sage_attention.py` — интеграция SageAttention-SM75 для T4,
+- `scripts/download_models.py` — авто-загрузка всех моделей одной командой.
+
+> ⚡ **Быстрая загрузка моделей:** `python scripts/download_models.py` скачает LTX GGUF (14 GB), Gemma FP4 (7.5 GB) и VAE (100 MB) в правильные папки. См. `--dry-run` для предпросмотра.
 
 Если хотите подробную дизайн-историю (размеры компонентов, математика per-strategy, почему `cpu` отвергается для DiT) — см. `PLAN.md` и `MODEL_FACTS.md` в родительской директории.
 
