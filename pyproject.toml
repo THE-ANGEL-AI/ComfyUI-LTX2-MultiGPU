@@ -24,15 +24,16 @@ classifiers = [
 Repository = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
 Issues = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/issues"
 
-# ComfyUI Registry conventions
+# ComfyUI Registry conventions (https://docs.comfy.org/registry/specifications)
 [tool.comfy]
-Publisher = "The Angel Studio"
-PublisherEmail = "gi.the.angel@gmail.com"
+PublisherId = "THE-ANGEL-AI"
+DisplayName = "LTX-2 MultiGPU"
+Icon = ""
+requires-comfyui = ">=0.3.0"
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["nodes"]
 packages = ["core", "."]

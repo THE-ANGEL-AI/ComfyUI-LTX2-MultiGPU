@@ -100,7 +100,7 @@ pip install -r requirements.txt
 
 `requirements.txt`: `gguf`, `safetensors`. PyTorch и сам ComfyUI уже установлены — не ставьте их второй раз.
 
-> 🛡 **Если у вас уже установлен `dreamfast/ComfyUI-LTX2-MultiGPU`** — папка в `custom_nodes/` называется одинаково (``ComfyUI-LTX2-MultiGPU/``), и ComfyUI Manager подцепит *чужое* авторство, даже если поставить наш пакет рядом. **Удалите старую папку — один раз, до клона**:
+> 🛡 **Если у вас уже установлен другой пакет с тем же именем папки** — папка в `custom_nodes/` называется одинаково (``ComfyUI-LTX2-MultiGPU/``), и ComfyUI Manager подцепит *чужое* авторство, даже если поставить наш пакет рядом. **Удалите старую папку — один раз, до клона**:
 > ```bash
 > # Linux/Kaggle/Colab
 > rm -rf /path/to/ComfyUI/custom_nodes/ComfyUI-LTX2-MultiGPU
@@ -261,5 +261,4 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 Стоит на плечах:
 
 - [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) — деквантизация GGUF (используем как upstream GGUF-loader),
-- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — паттерн, который мы заменили (DisTorch2 не подходит для LTX-Video),
-- [dreamfast/ComfyUI-LTX2-MultiGPU](https://github.com/dreamfast/ComfyUI-LTX2-MultiGPU) — **только** структурный референс: взяли иерархию класс-имен и расположение полей в нодах. **Ни одной строки общего кода**: наш сплиттер (`core/gguf_split.py`) — полностью независимая реализация с forward-hook вместо regex.
+- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — паттерн, который мы заменили (DisTorch2 не подходит для LTX-Video).

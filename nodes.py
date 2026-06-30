@@ -150,7 +150,8 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Узел 2. LTX2_MultiGPU_GemmaHybridLoader
-# ─────────────────────────────────────────────────────────────────────────────class LTX2_MultiGPU_GemmaHybridLoader:
+# ─────────────────────────────────────────────────────────────────────────────
+class LTX2_MultiGPU_GemmaHybridLoader:
     """Жёсткая загрузка Gemma 3 12B FP4: encoder → donor_device, projection → cuda:0.
 
     UI совместим с DualCLIPLoaderDisTorch2MultiGPU (см. скриншот пользователя):
@@ -349,9 +350,149 @@ class LTX2_MultiGPU_DeviceStrategy:
         return (new_patcher,)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Узел 5. LTX2_MultiGPU_VRAMParking
+# ─────────────────────────────────────────────────────────────────────────────
+class LTX2_MultiGPU_VRAMParking:
+    """Временно убирает DiT из VRAM для освобождения памяти под VAE/upscale.
+
+    Между Pass 1 (KSampler) и Pass 2 (KSampler) ComfyUI делает:
+      VAE decode → upscale → VAE encode.
+    DiT блоки (~9 GB на каждой карте) конкурируют с VAE/upscaler за VRAM.
+
+    Парковка переносит ВСЕ DiT блоки + служебные слои на CPU, освобождая
+    VRAM под VAE-стадии. После VAE encode — распарковка возвращает блоки
+    на исходные GPU в точности с исходной стратегией.
+    """
+
+    NODE_ID = "LTX2_MultiGPU_VRAMParking"
+    DISPLAY_NAME = "Парковка видеопамяти"
+
+    FUNCTION = "apply"
+    CATEGORY = "LTX-2 MultiGPU"
+    OUTPUT_NODE = False
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "park_in_cpu": ("BOOLEAN", {"default": True,
+                    "label_on": "Запарковать в CPU",
+                    "label_off": "Вернуть на GPU"}),
+                "verbose_log": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    def apply(
+        self,
+        model,
+        park_in_cpu: bool,
+        verbose_log: bool = False,
+    ) -> tuple:
+        from core.vram_parking import park_dit, unpark_dit
+
+        if park_in_cpu:
+            park_dit(model)
+        else:
+            unpark_dit(model)
+
+        if verbose_log:
+            state = "запаркован" if park_in_cpu else "распаркован"
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] VRAMParking: DiT {state} "
+                f"({'park_in_cpu=True' if park_in_cpu else 'park_in_cpu=False'})"
+            )
+
+        return (model,)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Узел 6. LTX2_MultiGPU_SageAttention
+# ─────────────────────────────────────────────────────────────────────────────
+class LTX2_MultiGPU_SageAttention:
+    """Ускоритель внимания через SageAttention-SM75 (оптимизация под T4/SM75).
+
+    Заменяет стандартное scaled_dot_product_attention на квантованное
+    внимание (INT8 QK^T + FP16 PV) через SageAttention-SM75 — форк,
+    адаптированный для Turing SM75 (T4) через Triton fallback.
+
+    Ожидаемое ускорение: ~1.5x end-to-end (внимание = 25-35% DiT compute).
+
+    Автоопределение: если sageattn НЕ установлен — тихо возвращает
+    модель без патча (стандартное внимание).
+    """
+
+    NODE_ID = "LTX2_MultiGPU_SageAttention"
+    DISPLAY_NAME = "Патч SageAttention (T4)"
+
+    FUNCTION = "apply"
+    CATEGORY = "LTX-2 MultiGPU"
+    OUTPUT_NODE = False
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "enable": ("BOOLEAN", {"default": True,
+                    "label_on": "Включить SageAttn",
+                    "label_off": "Выключить"}),
+                "verbose_log": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    def apply(
+        self,
+        model,
+        enable: bool,
+        verbose_log: bool = False,
+    ) -> tuple:
+        from core.sage_attention import get_sageattn_patch
+
+        # Клонируем patcher чтобы не мутировать оригинальный граф
+        # (shallow copy model_options).
+        patcher = model.clone()
+
+        if enable:
+            patch = get_sageattn_patch(verbose=verbose_log)
+            if patch:
+                opts = patcher.model_options.setdefault("attention_patch", {})
+                opts.update(patch)
+                if verbose_log:
+                    print(
+                        "[ComfyUI-LTX2-MultiGPU] SageAttention патч "
+                        "установлен в model_options."
+                    )
+            elif verbose_log:
+                print(
+                    "[ComfyUI-LTX2-MultiGPU] SageAttention НЕ активирован "
+                    "(модуль sageattn не найден)."
+                )
+        else:
+            # Очищаем патч если был установлен ранее в цепочке нод.
+            if "attention_patch" in patcher.model_options:
+                patcher.model_options["attention_patch"].pop("default", None)
+                # Убираем пустой attention_patch ключ (чистота model_options).
+                if not patcher.model_options["attention_patch"]:
+                    del patcher.model_options["attention_patch"]
+            if verbose_log:
+                print("[ComfyUI-LTX2-MultiGPU] SageAttention отключён.")
+
+        return (patcher,)
+
+
 __all__ = [
     "LTX2_MultiGPU_HybridSplitLoader",
     "LTX2_MultiGPU_GemmaHybridLoader",
     "LTX2_MultiGPU_MemoryDiagnostics",
     "LTX2_MultiGPU_DeviceStrategy",
+    "LTX2_MultiGPU_VRAMParking",
+    "LTX2_MultiGPU_SageAttention",
 ]

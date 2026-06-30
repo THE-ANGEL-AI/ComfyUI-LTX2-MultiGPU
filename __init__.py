@@ -50,36 +50,38 @@ def _build_config() -> None:
     Каждая нода-класс должна иметь атрибуты:
       - NODE_ID       (str) — уникальный ключ для NODE_CLASS_MAPPINGS
       - DISPLAY_NAME  (str) — человекочитаемое имя в меню
+
+    ⚠️ CRITICAL: Используем ОТНОСИТЕЛЬНЫЙ импорт ``.nodes``, а НЕ
+    ``importlib.import_module("nodes")`` — последний в ComfyUI runtime
+    находит ROOT ``nodes.py`` (уже в sys.modules) вместо нашего!
     """
-    import importlib
     import inspect
 
-    for mod_name in ("nodes",):
-        try:
-            module = importlib.import_module(mod_name)
-        except Exception as exc:  # noqa: BLE001 — широкий except защищает пакет от сбоя
-            print(f"[ComfyUI-LTX2-MultiGPU] Failed to import '{mod_name}': {exc}")
-            # Полный traceback — иначе в консоли ComfyUI видна только
-            # короткая строка exc и причина сбоя теряется (R6 хоть и
-            # защищает пакет, но скрывать traceback — это анти-паттерн).
-            import traceback as _tb
-            _tb.print_exc()
-            continue
+    try:
+        from . import nodes as _nodes
+    except Exception as exc:  # noqa: BLE001 — широкий except защищает пакет от сбоя
+        print(f"[ComfyUI-LTX2-MultiGPU] Failed to import '.nodes': {exc}")
+        # Полный traceback — иначе в консоли ComfyUI видна только
+        # короткая строка exc и причина сбоя теряется (R6 хоть и
+        # защищает пакет, но скрывать traceback — это анти-паттерн).
+        import traceback as _tb
+        _tb.print_exc()
+        return
 
-        # Собираем безопасные ссылки; битые классы не ломают пакет
-        for _attr_name, attr_value in vars(module).items():
-            if not inspect.isclass(attr_value):
-                continue
-            cls_id = getattr(attr_value, "NODE_ID", None)
-            if not isinstance(cls_id, str) or not cls_id.startswith("LTX2_MultiGPU_"):
-                continue
-            NODE_CONFIG.append(
-                {
-                    "id": cls_id,
-                    "class": attr_value,
-                    "name": getattr(attr_value, "DISPLAY_NAME", cls_id),
-                }
-            )
+    # Собираем безопасные ссылки; битые классы не ломают пакет
+    for _attr_name, attr_value in vars(_nodes).items():
+        if not inspect.isclass(attr_value):
+            continue
+        cls_id = getattr(attr_value, "NODE_ID", None)
+        if not isinstance(cls_id, str) or not cls_id.startswith("LTX2_MultiGPU_"):
+            continue
+        NODE_CONFIG.append(
+            {
+                "id": cls_id,
+                "class": attr_value,
+                "name": getattr(attr_value, "DISPLAY_NAME", cls_id),
+            }
+        )
 
 
 _build_config()
