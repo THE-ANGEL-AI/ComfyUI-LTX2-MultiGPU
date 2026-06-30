@@ -39,7 +39,7 @@ PublisherId = "THE-ANGEL-AI"
 DisplayName = "LTX-2 MultiGPU"
 author = "THE-ANGEL-AI"
 name = "ComfyUI-LTX2-MultiGPU"
-Icon = ""
+Icon = "assets/icon.png"
 reference = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
 requires-comfyui = ">=0.3.0"
 
