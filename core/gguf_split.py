@@ -335,13 +335,13 @@ def _split_blocks_indices(strategy: str) -> tuple[int, ...]:
     """Возвращает индекс блока-разделителя для strategy.
 
     blocks_50_50 → 22 (блоки 0..21 → device0; 22..43 → device1)
-    blocks_30_70 → 14 (блоки 0..13 → device0; 14..43 → device1)
+    blocks_30_70 → 13 (блоки 0..12 → device0; 13..43 → device1)
     others        → None (whole-model moves)
     """
     if strategy == "blocks_50_50":
         return (22,)
     if strategy == "blocks_30_70":
-        return (14,)
+        return (13,)
     return ()
 
 
@@ -406,10 +406,12 @@ def hybrid_split_gguf(
           не смог бы re-load DiT обратно на GPU после eject.
 
     Семантика donor_device по strategy:
-      blocks_50_50 / blocks_30_70 : primary_dev получает блоки [0..split_idx-1],
-                                   donor_dev получает блоки [split_idx..N-1].
-                                   forward_pre_hook на blocks[split_idx]
-                                   двигает hidden_states primary→donor.
+      blocks_50_50 : primary_dev получает блоки [0..21] (22 шт),
+                    donor_dev получает блоки [22..43] (22 шт).
+    blocks_30_70 : primary_dev получает блоки [0..12] (13 шт, ~30%),
+                    donor_dev получает блоки [13..43] (31 шт, ~70%).
+                    forward_pre_hook на blocks[split_idx] двигает
+                    hidden_states primary→donor.
       pipeline : весь DiT целиком на donor_dev (default auto→secondary).
       single_cuda0 : target=primary_dev (явный override, donor ignored).
       single_cuda1 : target=donor_dev (default auto→secondary, но user override побеждает).
@@ -1184,14 +1186,28 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
     else:
         target_dev = None
 
+    # FIX apply_strategy (b)+(e)+(d): bypass _lock_inner_to патч через
+    # _ltx2_original_to (Risk #7 lock блокирует device-перемещения от sampler'а,
+    # но apply_strategy — это legitimate strategy-switch, не sampler вызов).
+    # Также carry EMBED_AND_HEAD_REL @ primary при split switch (могли остаться
+    # на cuda:1 после whole-model стратегии) + defensive else-fallback для
+    # пустых splits (избегаем silent no-op при добавлении новых strategy).
+    _original_inner_to = getattr(inner, "_ltx2_original_to", inner.to)
+
     if target_dev is not None:
         with mm.cuda_device_context(target_dev):
-            inner.to(target_dev, non_blocking=False)
+            _original_inner_to(target_dev, non_blocking=False)
     elif blocks is not None and splits:
         split_idx = splits[0]
         with mm.cuda_device_context(primary_dev):
             for i in range(0, split_idx):
                 blocks[i].to(primary_dev)
+            # FIX (b): carry embed/head layers @ primary при split switch.
+            # Идемпотентно — если уже @ primary, _move_modules_with_prefix
+            # делает no-op move (cost: один named_modules() walk).
+            _move_modules_with_prefix(
+                diffusion, primary_dev, *EMBED_AND_HEAD_REL
+            )
         with mm.cuda_device_context(secondary_dev):
             for i in range(split_idx, len(blocks)):
                 blocks[i].to(secondary_dev)
@@ -1201,6 +1217,21 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
         )
         if handle is not None:
             _store_hook(patcher, handle)
+    else:
+        # FIX (d): defensive fallback — split strategy с пустым splits
+        # (новые strategy в STRATEGIES без _split_blocks_indices branch;
+        # degenerate single-GPU + non-single0 после normalize) → whole-model
+        # move @ primary, чтобы избежать silent no-op → runtime cross-device
+        # OOM / device mismatch.
+        if verbose:
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: "
+                f"strategy={strategy!r} вернул splits={splits} и "
+                f"target_dev=None — fallback на whole-model move @ "
+                f"primary_dev={primary_dev}"
+            )
+        with mm.cuda_device_context(primary_dev):
+            _original_inner_to(primary_dev, non_blocking=False)
 
     try:
         patcher.model_options["ltx2_multigpu_split"] = {
