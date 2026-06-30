@@ -1,15 +1,43 @@
 """ComfyUI-LTX2-MultiGPU — Hybrid Multi-GPU split for LTX 2.3 GGUF.
 
-Author: The Angel Studio <gi.the.angel@gmail.com>
-License: MIT
+═══════════════════════════════════════════════════════════════════════════
+  АВТОР / AUTHOR:  THE-ANGEL-AI  (The Angel Studio)
+  Repo:            https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU
+  Sponsor:         https://boosty.to/the_angel/donate
+  License:         GPL-3.0-or-later (см. LICENSE)
+  Display category: "LTX-2 MultiGPU" (4 ноды: Разделитель / Загрузчик промптов / Диагностика / Переключатель стратегии)
+
+  Независимая разработка для конфигурации 2×15 ГБ (T4×2 / Kaggle) с
+  долгой оптимизацией под этот железный профиль (см. CHANGELOG).
+  Используются как референс: city96/ComfyUI-GGUF (GGUF loader), и
+  pollockjj/ComfyUI-MultiGPU (MultiGPU patterns) — полные аттрибуции
+  в README → Credits. Это НЕ форк каких-либо из тех проектов.
+═══════════════════════════════════════════════════════════════════════════
 
 Правило R6 (agent-rules): каждый импорт обёрнут в try/except — сбой в одном
 узле НЕ должен ломать загрузку всего пакета (видно в меню Add Node).
 """
 
-# VERSION синхронизирован с pyproject.toml (release v0.2.0, 2026-06-30)
-__version__ = "0.2.1"
+__version__ = "0.2.2-pre"
 __author__ = "The Angel Studio"
+__author_email__ = "gi.the.angel@gmail.com"
+__author_github__ = "THE-ANGEL-AI"
+__repo__ = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
+
+# Консольный баннер — opt-in через env var. По умолчанию тихо, чтобы НЕ
+# засорять stdout при штатной загрузке пакета в ComfyUI. Установите
+# ``LTX2_MULTIGPU_VERBOSE=1`` если хотите видеть attribution при старте.
+import os as _os
+if _os.environ.get("LTX2_MULTIGPU_VERBOSE") == "1":
+    try:
+        print(
+            f"[ComfyUI-LTX2-MultiGPU v{__version__}] "
+            f"author={__author__!r} github={__author_github__!r} "
+            f"repo={__repo__}"
+        )
+    except Exception:  # noqa: BLE001
+        # stdout может быть unavailable в редких env (frozen exe, systemd)
+        pass
 
 NODE_CONFIG: list[dict] = [
     # Заполняется автоматически из nodes.py — см. _generate ниже.

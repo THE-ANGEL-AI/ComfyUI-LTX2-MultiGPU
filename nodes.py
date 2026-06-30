@@ -74,7 +74,10 @@ class LTX2_MultiGPU_HybridSplitLoader:
     """
 
     NODE_ID = "LTX2_MultiGPU_HybridSplitLoader"
-    DISPLAY_NAME = "LTX-2 Hybrid Split Loader"
+    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
+    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
+    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    DISPLAY_NAME = "Разделитель модели (2 GPU)"
 
     FUNCTION = "load"
     CATEGORY = "LTX-2 MultiGPU"
@@ -147,8 +150,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Узел 2. LTX2_MultiGPU_GemmaHybridLoader
-# ─────────────────────────────────────────────────────────────────────────────
-class LTX2_MultiGPU_GemmaHybridLoader:
+# ─────────────────────────────────────────────────────────────────────────────class LTX2_MultiGPU_GemmaHybridLoader:
     """Жёсткая загрузка Gemma 3 12B FP4: encoder → donor_device, projection → cuda:0.
 
     UI совместим с DualCLIPLoaderDisTorch2MultiGPU (см. скриншот пользователя):
@@ -157,13 +159,16 @@ class LTX2_MultiGPU_GemmaHybridLoader:
       eject_models   True ⇒ после load: offload_device=CPU + soft_empty_cache.
                      NB: под Risk #7 lock (.to() no-op) sampler не сможет
                      re-load projection обратно на cuda:0 после eject —
-                     используйте только если уверены.
+                         используйте только если уверены.
       verbose_log    печатать per-component allocation log (encoder/proj GB,
                      VRAM free до/после).
     """
 
     NODE_ID = "LTX2_MultiGPU_GemmaHybridLoader"
-    DISPLAY_NAME = "LTX-2 Gemma Hybrid Loader"
+    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
+    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
+    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    DISPLAY_NAME = "Загрузчик промптов (Gemma 3)"
 
     FUNCTION = "load"
     CATEGORY = "LTX-2 MultiGPU"
@@ -229,7 +234,10 @@ class LTX2_MultiGPU_MemoryDiagnostics:
     """Pre-flight VRAM checker: dry-load прогон + nvidia-smi лог в консоль."""
 
     NODE_ID = "LTX2_MultiGPU_MemoryDiagnostics"
-    DISPLAY_NAME = "LTX-2 Memory Diagnostics"
+    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
+    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
+    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    DISPLAY_NAME = "Диагностика видеопамяти"
 
     FUNCTION = "diagnose"
     CATEGORY = "LTX-2 MultiGPU"
@@ -282,7 +290,10 @@ class LTX2_MultiGPU_DeviceStrategy:
     """Переключатель глобальной стратегии распределения через mm."""
 
     NODE_ID = "LTX2_MultiGPU_DeviceStrategy"
-    DISPLAY_NAME = "LTX-2 Device Strategy Switch"
+    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
+    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
+    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    DISPLAY_NAME = "Переключатель стратегии"
 
     FUNCTION = "apply_strategy"
     CATEGORY = "LTX-2 MultiGPU"

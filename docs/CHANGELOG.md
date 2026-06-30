@@ -7,6 +7,75 @@
 
 ---
 
+## [v0.2.2-pre] — 2026-06-30 (pre-T4x2 deploy: attribution + Russian UX)
+
+### Проблема, которую решает этот релиз
+
+Пользователи в ComfyUI Manager видели атрибуцию чужого проекта (`dreamfast`) и
+только английские длинные названия нод в меню Add Node → root → непонятно, какие
+имена для workflow-линковки и как добавлять узлы. Этот релиз чётко ставит
+атрибуцию (THE-ANGEL-AI / The Angel Studio / `gi.the.angel@gmail.com`) и делает
+display-имена нод понятными русскоязычным пользователям.
+
+### Fixed (атрибуция для ComfyUI Manager)
+
+- **FIX ATTRIB-1 (`__init__.py`)**: добавлены все required/optional metadata-поля,
+  которые ComfyUI (включая ComfyUI Manager's registry) использует для attribution:
+  - ``__version__ = "0.2.2-pre"`` (синхронизирован с pyproject.toml).
+  - ``__author__ = "The Angel Studio"`` (был уже).
+  - ``__author_email__ = "gi.the.angel@gmail.com"`` (NEW).
+  - ``__author_github__ = "THE-ANGEL-AI"`` (NEW — ComfyUI Manager парсит это
+    поле из некоторых forks и сопоставляет с GitHub API для верификации).
+  - ``__repo__ = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"`` (NEW
+    — fallback для consumers, которые читают ``__repo__`` напрямую).
+  - Большой header в module docstring с ascii-art-attribution banner: автор,
+    repo, sponsor, license, 4 ноды одной строкой, явное
+    **«НЕ форк каких-либо из тех проектов»** (anti-confusion guard против
+    `dreamfast/ComfyUI-LTX2-MultiGPU` — у нас другой проект).
+- **FIX ATTRIB-2 (`pyproject.toml`)**: ``[project].description`` теперь явно
+  указывает авторство: *"Hybrid Multi-GPU split loader for LTX 2.3 GGUF on
+  2×T4. Made by THE-ANGEL-AI. Не fork dreamfast."* (первая фраза осталась
+  функциональной, второй абзац — attribution-guard).
+- **FIX ATTRIB-3 (`pyproject.toml`)**: ``version`` bumped ``"0.2.1"`` → ``"0.2.2-pre"``.
+- **FIX ATTRIB-4 (`__init__.py`)**: консольный banner с author/repo/version
+  **opt-in** через env-var ``LTX2_MULTIGPU_VERBOSE=1``. По умолчанию — тихо,
+  чтобы не засорять stdout ComfyUI при штатной загрузке. Stdout-fallback
+  (`try: print(...) except Exception: pass`) на случай frozen-exe / systemd env.
+
+### Fixed (Russian display names + clean menu grouping)
+
+- **FIX UX-1 (`nodes.py`)**: 4 DISPLAY_NAME'а переведены на **русский** для
+  человекочитаемости в меню Add Node. Технические class-keys (``NODE_ID``)
+  и ``model_class`` values в ``NODE_CLASS_MAPPINGS`` НЕ переименованы — все
+  существующие workflow_api.json остаются совместимыми. Финальные имена:
+  - ``LTX2_MultiGPU_HybridSplitLoader`` → ``"Разделитель модели (2 GPU)"``
+  - ``LTX2_MultiGPU_GemmaHybridLoader`` → ``"Загрузчик промптов (Gemma 3)"``
+  - ``LTX2_MultiGPU_MemoryDiagnostics`` → ``"Диагностика видеопамяти"``
+  - ``LTX2_MultiGPU_DeviceStrategy`` → ``"Переключатель стратегии"``
+  В ComfyUI Add Node меню теперь: **Add Node → LTX-2 MultiGPU →**
+  четыре русских имени в алфавитном порядке (Д < З < П < П). CATEGORY
+  ``"LTX-2 MultiGPU"`` обеспечивает group-prefix auto-add в UI, поэтому в
+  DISPLAY_NAME мы НЕ дублируем бренд-префикс (reviewer-revised style).
+- **FIX UX-2 (`nodes.py`)**: каждый DISPLAY_NAME прокомментирован:
+  *"Russian display name for users (grouped by CATEGORY). CATEGORY prefix
+  adds the brand tag automatically in ComfyUI's Add Node menu, NODE_ID
+  (technical class key) preserved for workflow_api/script compat."*
+
+### Compatibility note
+
+- ``NODE_CLASS_MAPPINGS`` keys (technical) **не изменены**: все 4 ключа —
+  ``LTX2_MultiGPU_*`` — те же что в v0.2.1. Existing workflow_api.json
+  старых версий остаются load-compatible.
+- ``NODE_DISPLAY_NAME_MAPPINGS`` values изменены — это OK, поскольку эти
+  values используются только для UI-render. Если какой-то downstream
+  serailizes workflow_api.json по display-name (не NODE_ID), они увидят
+  русские имена после upgrade; это правильный путь для v0.2.2-pre.
+- ``__version__ = "0.2.2-pre"`` — pre-release marker; users на ``pip install
+  --pre`` получат эту версию, на stable pin получат v0.2.1 пока не выйдет
+  v0.2.2 stable.
+
+---
+
 ## [v0.2.1] — 2026-06-30 (audit-driven bugfixes)
 
 ### Fixed (аудит post-v0.2.0: regressive correction + strategy-switch reliability)

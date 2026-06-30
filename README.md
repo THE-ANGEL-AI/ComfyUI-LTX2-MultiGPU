@@ -6,7 +6,7 @@
 [![Sponsor: Boosty](https://img.shields.io/badge/Sponsor-Boosty-orange.svg)](https://boosty.to/the_angel/donate)
 [![ComfyUI Custom Node](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.2.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-0.2.2--pre-green.svg)]()
 
 > 🚧 **Скоро будет демо-GIF.** Положите файл `docs/hero.gif` (480p→720p прогон) в этот репозиторий, чтобы заменить этот блок. А пока просто добавьте ноду **LTX-2 Memory Diagnostics** перед KSampler — она покажет состояние обеих видеокарт в начале сессии.
 
@@ -45,12 +45,14 @@
 
 Четыре ноды появятся в разделе **Add Node → LTX-2 MultiGPU**:
 
-| Нода | Что делает простыми словами | Чем заменяет |
-|---|---|---|
-| **LTX-2 Hybrid Split Loader** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
-| **LTX-2 Gemma Hybrid Loader** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
-| **LTX-2 Memory Diagnostics** | Перед запуском печатает состояние обеих видеокарт и прикидывает, хватит ли памяти | — |
-| **LTX-2 Device Strategy Switch** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
+| Технический ключ (для workflow_api.json) | Отображение в меню | Что делает простыми словами | Чем заменяет |
+|---|---|---|---|
+| `LTX2_MultiGPU_HybridSplitLoader` | **Разделитель модели (2 GPU)** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
+| `LTX2_MultiGPU_GemmaHybridLoader` | **Загрузчик промптов (Gemma 3)** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
+| `LTX2_MultiGPU_MemoryDiagnostics` | **Диагностика видеопамяти** | Перед запуском печатает состояние обеих видеокарт и прикидывает, хватит ли памяти | — |
+| `LTX2_MultiGPU_DeviceStrategy` | **Переключатель стратегии** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
+
+> 💡 **Привязка в workflow:** названия в workflow_api.json не менялись — по-прежнему левый столбец из таблицы. Русские слова из второго столбца нужны только чтобы быстро найти ноду в меню глазами.
 
 ---
 
@@ -97,6 +99,15 @@ pip install -r requirements.txt
 ```
 
 `requirements.txt`: `gguf`, `safetensors`. PyTorch и сам ComfyUI уже установлены — не ставьте их второй раз.
+
+> 🛡 **Если у вас уже установлен `dreamfast/ComfyUI-LTX2-MultiGPU`** — папка в `custom_nodes/` называется одинаково (``ComfyUI-LTX2-MultiGPU/``), и ComfyUI Manager подцепит *чужое* авторство, даже если поставить наш пакет рядом. **Удалите старую папку — один раз, до клона**:
+> ```bash
+> # Linux/Kaggle/Colab
+> rm -rf /path/to/ComfyUI/custom_nodes/ComfyUI-LTX2-MultiGPU
+> # Windows (PowerShell)
+> Remove-Item -Recurse -Force D:\ComfyUI\custom_nodes\ComfyUI-LTX2-MultiGPU
+> ```
+> После этого делайте `git clone https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU.git` как обычно. Атрибуция будет корректной: **The Angel Studio / THE-ANGEL-AI**.
 
 ---
 
@@ -249,6 +260,6 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 
 Стоит на плечах:
 
-- [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) — деквантизация GGUF,
-- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — паттерн, который мы заменили,
-- [dreamfast/ComfyUI-LTX2-MultiGPU](https://github.com/dreamfast/ComfyUI-LTX2-MultiGPU) — образец структуры нод.
+- [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) — деквантизация GGUF (используем как upstream GGUF-loader),
+- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — паттерн, который мы заменили (DisTorch2 не подходит для LTX-Video),
+- [dreamfast/ComfyUI-LTX2-MultiGPU](https://github.com/dreamfast/ComfyUI-LTX2-MultiGPU) — **только** структурный референс: взяли иерархию класс-имен и расположение полей в нодах. **Ни одной строки общего кода**: наш сплиттер (`core/gguf_split.py`) — полностью независимая реализация с forward-hook вместо regex.
