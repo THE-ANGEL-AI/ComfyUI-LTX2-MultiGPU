@@ -60,3 +60,6 @@ extra_model_paths.yaml
 
 # ─── Тесты (не пушим на GitHub — CI использует host machine, не remote) ───────
 /tests/
+
+# ─── White Paper (локальный документ, не в репо) ─────────────────────────────
+/LTX2_MultiGPU_WhitePaper.md
