@@ -1,0 +1,17 @@
+# GitHub funding configuration
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# У этого проекта нет аккаунта GitHub Sponsors, Boosty указан как custom URL.
+github: []
+
+# Other supported platforms (не используются, оставлены пустыми для ясности).
+patreon:
+open_collective:
+ko_fi:
+tidelift:
+liberapay:
+issuehunt:
+polar:
+
+# Custom URL — Boosty-страница автора. Можно добавить несколько.
+custom: ["https://boosty.to/the_angel/donate"]

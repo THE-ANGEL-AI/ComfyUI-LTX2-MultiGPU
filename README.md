@@ -1,59 +1,81 @@
-# LTX-2 MultiGPU — Hybrid 2-GPU Split for LTX 2.3
+# LTX-2 MultiGPU — гибридная загрузка на 2 видеокарты для LTX 2.3
 
-> Run **LTX 2.3 22B GGUF** across 2 GPUs without OOM. Built for Kaggle T4×2 (2 × 15 GB), tested on RTX 4090 / A5000 too.
+> Запускайте **LTX 2.3 22B GGUF** на двух видеокартах без нехватки памяти. Сделано для Kaggle T4×2 (2 × 15 ГБ), проверено также на RTX 4090 / A5000.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Sponsor: Boosty](https://img.shields.io/badge/Sponsor-Boosty-orange.svg)](https://boosty.to/the_angel/donate)
 [![ComfyUI Custom Node](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![Version](https://img.shields.io/badge/version-0.1.0-green.svg)]()
 
-> 🚧 **Demo GIF coming soon.** Drop a `docs/hero.gif` (480p→720p run) in this repo to replace this block. Until then, run **LTX-2 Memory Diagnostics** before your KSampler — it'll print both cards' VRAM snapshot at session start, which is the next best thing.
+> 🚧 **Скоро будет демо-GIF.** Положите файл `docs/hero.gif` (480p→720p прогон) в этот репозиторий, чтобы заменить этот блок. А пока просто добавьте ноду **LTX-2 Memory Diagnostics** перед KSampler — она покажет состояние обеих видеокарт в начале сессии.
 
 ---
 
-## TL;DR
+## Что это и зачем — простыми словами
 
-You're trying to run **LTX 2.3 22B** (GGUF Q4_K_M / Q5_K_M / Q6_K) across **2 × 15 GB GPUs** — most likely a pair of T4s on Kaggle. The vanilla `UnetLoaderGGUFDisTorch2MultiGPU` OOMs at 720p because DisTorch2 can't find LTX-Video's DiT blocks (it greps for `model.diffusion_model.layers.*`, but LTX exposes them as `model.diffusion_model.transformer_blocks.*`).
+**LTX 2.3** — это нейросеть для генерации видео. Версия 22B (на 22 миллиарда параметров) занимает **~20 ГБ** в видеопамяти и **не помещается** в одну карту на 15 ГБ. Если попробовать загрузить её целиком на одну карту — получите ошибку `OOM (Out of Memory)`, то есть «память закончилась».
 
-This pack skips DisTorch2 entirely. It loads the GGUF itself, splits the 44 DiT blocks across your two GPUs, pins Gemma 3 12B FP4 to whichever card has room, and uses a forward hook to hand hidden-state between cards each step. No offload-to-CPU stalling, no 720p OOM.
+В этом пакете мы **делим** тяжёлую модель на две части и кладём каждую часть на свою видеокарту. Обе карты работают вместе, передавая друг другу промежуточные данные через специальный механизм (forward hook). В итоге:
+
+- видео генерируется быстрее,
+- памяти хватает,
+- карты не простаивают.
+
+Никаких танцев с бубном, никакого перекладывания модели в оперативку процессора между шагами — всё лежит в VRAM и работает параллельно.
 
 ---
 
-## What's in the box
+## Если хотите поддержать проект 💚
 
-Four nodes land in **Add Node → LTX-2 MultiGPU**:
+Проект бесплатный и без рекламы, но разработка и тестирование требуют времени и GPU-часов на Kaggle/Colab. Если вам зашло и хочется сказать «спасибо»:
 
-| Node | What it does | Replaces |
+👉 **[Поддержать на Boosty](https://boosty.to/the_angel/donate)** — там можно перевести любую сумму даже анонимно.
+
+Куда идут деньги:
+
+- оплата Kaggle/Colab GPU-часов для тестирования на разных конфигурациях,
+- новые квантизации LTX-GGUF (Q3, Q2),
+- эксперименты с профилями для нестандартного железа (RTX 3090 + T4, A5000 + 3060 и т.д.),
+- документация и переводы.
+
+---
+
+## Что в коробке
+
+Четыре ноды появятся в разделе **Add Node → LTX-2 MultiGPU**:
+
+| Нода | Что делает простыми словами | Чем заменяет |
 |---|---|---|
-| **LTX-2 Hybrid Split Loader** | Loads GGUF DiT, splits 44 blocks across your 2 GPUs, wires the cross-card forward hook | `UnetLoaderGGUFDisTorch2MultiGPU` |
-| **LTX-2 Gemma Hybrid Loader** | Loads Gemma 3 12B FP4 + `text_projection` as a single CLIP, pinned to the right cards | `DualCLIPLoaderDisTorch2MultiGPU` |
-| **LTX-2 Memory Diagnostics** | Pre-flight VRAM check — projects your strategy fit, prints an `nvidia-smi` snapshot | — |
-| **LTX-2 Device Strategy Switch** | Hot-swap the split strategy mid-session (re-routes forward hooks, no reload) | — |
+| **LTX-2 Hybrid Split Loader** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
+| **LTX-2 Gemma Hybrid Loader** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
+| **LTX-2 Memory Diagnostics** | Перед запуском печатает состояние обеих видеокарт и прикидывает, хватит ли памяти | — |
+| **LTX-2 Device Strategy Switch** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
 
 ---
 
-## Target VRAM layout (Q6_K + Gemma 12B FP4)
+## Как память разложена на картах (Q6_K + Gemma 12B FP4)
 
 ```
-            ┌─────────── cuda:0 (15 GB) ──────────┐  ┌─────────── cuda:1 (15 GB) ──────────┐
-            │  DiT blocks  0..21   (~9 GB)         │  │  DiT blocks 22..43  (~9 GB)        │
-            │  text_projection     (~2.1 GB)       │  │  Gemma 3 12B FP4    (~7.5 GB)      │
-            │  Video VAE           (~1.4 GB)       │  │  Audio VAE          (~0.4 GB)      │
-            │  Latent Upscaler     (~1.0 GB)       │  │                                    │
-            │  LoRAs (merged)      (~1–3 GB)       │  │                                    │
-            │  SageAttn scratch    (~2.1 GB)       │  │  SageAttn scratch    (~2.1 GB)     │
-            │  ───────────────────────────────     │  │  ──────────────────────────────    │
-            │  ≈ 10–14 GB total   ✅ fits          │  │  ≈ 16–17 GB total   ✅ fits        │
-            └─────────────────────────────────────┘  └────────────────────────────────────┘
+            ┌─────────── cuda:0 (15 ГБ) ─────────────┐  ┌─────────── cuda:1 (15 ГБ) ─────────────┐
+            │  DiT блоки 0..21   (~9 ГБ)             │  │  DiT блоки 22..43  (~9 ГБ)            │
+            │  text_projection   (~2.1 ГБ)           │  │  Gemma 3 12B FP4    (~7.5 ГБ)         │
+            │  Video VAE         (~1.4 ГБ)           │  │  Audio VAE          (~0.4 ГБ)         │
+            │  Latent Upscaler   (~1.0 ГБ)           │  │                                      │
+            │  LoRы (объединённые) (~1–3 ГБ)          │  │                                      │
+            │  Scratch SageAttn  (~2.1 ГБ)           │  │  Scratch SageAttn   (~2.1 ГБ)         │
+            │  ─────────────────────────────         │  │  ──────────────────────────────       │
+            │  ≈ 10–14 ГБ итог   ✅ хватает         │  │  ≈ 16–17 ГБ итог   ✅ хватает         │
+            └─────────────────────────────────────┘  └─────────────────────────────────────────┘
 ```
 
-That leaves ~1–4 GB of activation headroom per card — enough for 720p upscale. *(Numbers include the **2.1 GB SageAttn scratch** per card; subtract 2.1 on each side if you're running SageAttn off.)*
+Остаётся ~1–4 ГБ запаса на каждой карте — хватит для апскейла до 720p. *(Цифры учитывают **2.1 ГБ SageAttn scratch** на каждой карте; если SageAttn выключен — отнимайте по 2.1 ГБ с каждой стороны.)*
 
 ---
 
-## Install
+## Установка
 
-About 30 seconds end-to-end.
+Это занимает ~30 секунд.
 
 **Windows (PowerShell):**
 
@@ -62,25 +84,25 @@ cd D:\ComfyUI\custom_nodes
 git clone https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU.git
 cd ComfyUI-LTX2-MultiGPU
 pip install -r requirements.txt
-# Restart ComfyUI. The four nodes appear under "Add Node → LTX-2 MultiGPU".
+# Перезапустите ComfyUI. Четыре ноды появятся в "Add Node → LTX-2 MultiGPU".
 ```
 
 **Linux / Kaggle / Colab:**
 
 ```bash
-cd /workspace/ComfyUI/custom_nodes        # or wherever your ComfyUI lives
+cd /workspace/ComfyUI/custom_nodes        # или где у вас ComfyUI
 git clone https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU.git
 cd ComfyUI-LTX2-MultiGPU
 pip install -r requirements.txt
 ```
 
-`requirements.txt`: `gguf`, `safetensors`. PyTorch and ComfyUI itself are already installed — don't double them up.
+`requirements.txt`: `gguf`, `safetensors`. PyTorch и сам ComfyUI уже установлены — не ставьте их второй раз.
 
 ---
 
-## Quick start
+## Быстрый старт
 
-1. **Drop the models** where ComfyUI expects them:
+1. **Положите модели** туда, где ComfyUI их ждёт:
 
    ```
    models/diffusion_models/ltx-2.3-Q6_K.gguf
@@ -88,116 +110,123 @@ pip install -r requirements.txt
    models/text_encoders/gemma-3-12b-text_projection.safetensors
    ```
 
-2. **Swap your two loaders** — replace `UnetLoaderGGUFDisTorch2MultiGPU` with **LTX-2 Hybrid Split Loader**, and replace `DualCLIPLoaderDisTorch2MultiGPU` with **LTX-2 Gemma Hybrid Loader**.
+2. **Замените два ваших лоадера** — вместо `UnetLoaderGGUFDisTorch2MultiGPU` поставьте **LTX-2 Hybrid Split Loader**, а вместо `DualCLIPLoaderDisTorch2MultiGPU` — **LTX-2 Gemma Hybrid Loader**.
 
-3. **Plug in LTX-2 Memory Diagnostics** right before your KSampler. It logs a `nvidia-smi` snapshot so you can confirm both cards are live.
+3. **Подключите LTX-2 Memory Diagnostics** прямо перед KSampler. Нода выведет в консоль снимок `nvidia-smi`, и вы убедитесь, что обе карты активны.
 
-4. **Hit Generate.** Both GPUs should ramp up; first generation warm-up takes ~20–40 s (block placement + forward-hook setup), then throughput per step is normal.
+4. **Нажмите Generate.** Обе видеокарты должны загрузиться; первый прогон займёт ~20–40 с (раскладка блоков + установка forward-хука), потом скорость пойдёт нормальная.
 
-### Pick a split strategy
+### Выбор стратегии
 
-`LTX-2 Hybrid Split Loader` exposes a `split_strategy` dropdown:
+В **LTX-2 Hybrid Split Loader** есть выпадающее меню `split_strategy`:
 
-| Strategy | DiT layout | Pick this when |
+| Стратегия | Как раскладывает DiT | Когда выбирать |
 |---|---|---|
-| `blocks_50_50` *(default)* | 22 blocks per card | Balanced 2 × 15 GB hardware |
-| `blocks_30_70` | 13 blocks on cuda:0, 30 on cuda:1 | cuda:0 also hosts VAE + Upscaler + heavy LoRAs |
-| `pipeline` | Whole DiT on cuda:1, Gemma on cuda:0 | You're stacking ControlNet / extra encoders on cuda:0 |
-| `single_cuda0` | Everything on cuda:0 | Single-GPU fallback / debugging |
-| `single_cuda1` | Everything on cuda:1 | Single-GPU fallback / debugging |
+| `blocks_50_50` *(по умолчанию)* | 22 блока на каждой карте | Сбалансированное 2 × 15 ГБ железо |
+| `blocks_30_70` | 13 блоков на cuda:0, 30 на cuda:1 | На cuda:0 ещё живут VAE + Upscaler + тяжёлые LoRы |
+| `pipeline` | Весь DiT на cuda:1, Gemma на cuda:0 | На cuda:0 навешаны ControlNet / доп. энкодеры |
+| `single_cuda0` | Всё на cuda:0 | Фолбэк на одну карту / отладка |
+| `single_cuda1` | Всё на cuda:1 | Фолбэк на одну карту / отладка |
 
-Want to swap mid-run? Wire `LTX-2 Device Strategy Switch` between the loader and KSampler.
-
----
-
-## How did we get stuck?
-
-`pollockjj/ComfyUI-MultiGPU` discovers DiT blocks with the regex `model.diffusion_model.layers.*`. After `city96/ComfyUI-GGUF` dequantizes the GGUF into fp16, **LTX-Video's 44 blocks show up as `model.diffusion_model.transformer_blocks.*`** — totally different prefix. DisTorch2 matches zero blocks, silently drops the entire 17 GB DiT on `cuda:0`, and OOMs the moment you reach 720p upscale.
-
-Fix: don't pretend DisTorch2 can be patched — load the GGUF yourself, hand-place every tensor, and hand-roll the cross-card forward hook.
+Хотите сменить стратегию на лету? Подключите **LTX-2 Device Strategy Switch** между лоадером и KSampler.
 
 ---
 
-## Hardware
+## Почему так получилось? (техническая часть)
 
-**Tested and confirmed working:**
+Существующая нода `pollockjj/ComfyUI-MultiGPU` ищет блоки DiT регуляркой `model.diffusion_model.layers.*`. После того, как `city96/ComfyUI-GGUF` расквантизирует GGUF в fp16, **44 блока LTX-Video превращаются в имена `model.diffusion_model.transformer_blocks.*`** — это совсем другой префикс. DisTorch2 не находит ни одного блока, тихо сваливает все 17 ГБ DiT на cuda:0, и вылетает с OOM, как только дело доходит до апскейла 720p.
 
-- 2 × NVIDIA T4 15 GB *(Kaggle default — main target)*
-- 2 × RTX 4090 24 GB
-- RTX A5000 24 GB paired with RTX 3090 24 GB *(asymmetric? go `blocks_30_70`)*
-
-**Minimum:** 2 × 15 GB. Single-GPU fallback (`single_cuda0` / `single_cuda1`) wants 24+ GB.
-
-**CPU offload is not supported for DiT.** Shuttling ~17 GB across PCIe every KSampler step would cost ~60 s per generation — DiT stays pinned in VRAM. (Gemma is a different story — see the next tip.)
+**Починка**: не пытаемся патчить DisTorch2 — мы сами грузим GGUF, сами раскладываем каждый тензор по картам, сами пишем cross-card forward-hook.
 
 ---
 
-## Tips & gotchas
+## Железо
 
-### Free ~9.6 GB between cards
+**Проверено и работает:**
 
-Flip `eject_models = True` on **LTX-2 Gemma Hybrid Loader**. After load, both projects
-encoder (~7.5 GB on cuda:1) **and** `text_projection` (~2.1 GB on cuda:0) flip to CPU in a single call, as long as your downstream node invokes `model_unload()`.
+- **2 × NVIDIA T4 15 ГБ** *(Kaggle по умолчанию — главная цель)*
+- **2 × RTX 4090 24 ГБ**
+- **RTX A5000 24 ГБ** в паре с **RTX 3090 24 ГБ** *(асимметрия? выбирайте `blocks_30_70`)*
 
-Heads up: re-conditioning in the same session won't work — sampler can't reload `text_projection` while another model holds the GPU. Use `eject_models` only for **single-pass encoding** workflows.
+**Минимум:** 2 × 15 ГБ. Фолбэк на одну карту (`single_cuda0` / `single_cuda1`) требует 24+ ГБ.
 
-### Long prompts blow past 7.5 GB on cuda:1?
-
-Gemma's KV cache grows with prompt length. If you find yourself OOMing on cuda:1, switch to `pipeline` — that moves the whole encoder to cuda:0, leaving cuda:1 dedicated to DiT hidden-state math.
-
-### 720p upscale still OOMs?
-
-Try `blocks_30_70` first — it shifts DiT weight slightly toward cuda:1, freeing cuda:0 for the upscale moment. Still tight? Pipe a tiled VAE between KSampler and the upscaler node; cross-GPU tiled attention is still experimental.
-
-### Where do I see `nvidia-smi` while generating?
-
-Drop an **LTX-2 Memory Diagnostics** node upstream of KSampler. It's a terminal-output node that prints a per-card VRAM + utilization snapshot at the start of every run.
+**CPU offload для DiT не поддерживается.** Гонять ~17 ГБ через PCIe на каждом шаге KSampler стоило бы ~60 с на генерацию — DiT остаётся в VRAM. (С Gemma другая история — см. совет ниже.)
 
 ---
 
-## Verified GGUF quantizations
+## Советы и грабли
 
-Sourced from `MODEL_FACTS.md §2` (component footprint table). For exact file sizes of the LTX-Video 22B GGUF release, check the model's Hugging Face card — these are approximate baseline sizes for a fresh download.
+### Освободите ~9.6 ГБ между картами
 
-| GGUF quant | Approx. file size | Result |
+Включите `eject_models = True` в **LTX-2 Gemma Hybrid Loader**. После загрузки и проектор энкодера (~7.5 ГБ на cuda:1), и `text_projection` (~2.1 ГБ на cuda:0) уйдут в CPU одним вызовом — при условии, что ваша следующая нода дёрнет `model_unload()`.
+
+⚠️ Пере-кодирование промпта в той же сессии не сработает — сэмплер не сможет перезагрузить `text_projection`, пока другая модель держит GPU. Используйте `eject_models` только для **single-pass encoding** воркфлоу.
+
+### Длинные промпты не лезут в 7.5 ГБ на cuda:1?
+
+KV-кеш Gemma растёт с длиной промпта. Если получаете OOM на cuda:1 — переключитесь на `pipeline`: тогда весь энкодер уйдёт на cuda:0, а cuda:1 освободится под скрытые состояния DiT.
+
+### 720p-апскейл всё равно OOM-ит?
+
+Попробуйте сначала `blocks_30_70` — он чуть сдвигает DiT в сторону cuda:1, освобождая cuda:0 для момента апскейла. Всё ещё тесно? Вставьте тайловый VAE между KSampler и апскейлером; cross-GPU тайловое внимание пока экспериментальное.
+
+### Где смотреть `nvidia-smi` во время генерации?
+
+Подключите **LTX-2 Memory Diagnostics** перед KSampler. Нода печатает в консоль снапшот обеих карт: занятая VRAM и загрузка GPU в начале каждого прогона.
+
+---
+
+## Проверенные GGUF-квантизации
+
+Размеры взяты из `MODEL_FACTS.md §2` (таблица размеров компонентов). Точные размеры файлов для конкретного релиза LTX-Video 22B смотрите на Hugging Face-страничке модели — здесь примерные базовые цифры для свежей загрузки.
+
+| GGUF-квантизация | Примерный размер | Результат |
 |---|---|---|
-| Q4_K_M | ~17 GB | Comfortable — fits with margin |
-| Q5_K_M | ~21 GB | Fits — default for Kaggle T4×2 |
-| Q6_K | ~24 GB | Best quality — works if both cards have ≥24 GB |
-| Q3 / Q2 | < 12 GB | Untested, expect visible quality loss |
+| Q4_K_M | ~17 ГБ | Комфортно — влезает с запасом |
+| Q5_K_M | ~21 ГБ | Влезает — стандарт для Kaggle T4×2 |
+| Q6_K | ~24 ГБ | Лучшее качество — работает, если обе карты ≥24 ГБ |
+| Q3 / Q2 | < 12 ГБ | Не тестировали, ожидайте видимой потери качества |
 
 ---
 
-## Compatibility note
+## Лицензия и юридические моменты
 
-LTX 2.3 model weights are released under the **LTX-Video Community License** — commercial use has restrictions. Double-check the license terms on the model's Hugging Face page before shipping anything on top of this pack.
+**Веса модели LTX 2.3** распространяются под **LTX-Video Community License** — коммерческое использование ограничено. Перепроверьте условия лицензии на Hugging Face-страничке модели, прежде чем выпускать что-либо на основе этого пакета.
 
----
-
-## Hacking on it
-
-The implementation lives in two files you'll probably want to read:
-
-- `core/gguf_split.py` — GGUF splitter + forward-hook setup
-- `core/memory_tracker.py` — pre-flight VRAM projections
-
-If you want the longer design story (component sizes, per-strategy projection math, why `cpu` is rejected for DiT), see `PLAN.md` and `MODEL_FACTS.md` in the parent directory of this repo.
-
-PRs welcome — particularly around:
-
-- New GGUF quant levels
-- Non-T4 / asymmetric hardware profiles
-- Performance numbers (per-step wall time, PCIe bottleneck measurement)
+**Код пакета распространяется под GPL-3.0-or-later** (см. файл `LICENSE`). Сами веса модели — под LTX-Video Community License / Gemma License, как указано выше.
 
 ---
 
-## Credits
+## Хочется поковыряться
 
-Author: **The Angel Studio** ([@THE-ANGEL-AI](https://github.com/THE-ANGEL-AI))  
-License: **GPL-3.0-or-later** for this code. LTX 2.3 weights themselves are under the LTX-Video Community License — see the compatibility note above.
+Самое интересное живёт в двух файлах:
 
-Built on top of:
+- `core/gguf_split.py` — GGUF-сплиттер + установка forward-хука,
+- `core/memory_tracker.py` — расчёт VRAM-потребности до запуска.
 
-- [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) — GGUF dequant
-- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — pattern we're replacing
-- [dreamfast/ComfyUI-LTX2-MultiGPU](https://github.com/dreamfast/ComfyUI-LTX2-MultiGPU) — node structure reference
+Если хотите подробную дизайн-историю (размеры компонентов, математика per-strategy, почему `cpu` отвергается для DiT) — см. `PLAN.md` и `MODEL_FACTS.md` в родительской директории.
+
+**PR приветствуются**, особенно по темам:
+
+- новые GGUF-квантизации,
+- профили для нестандартного / асимметричного железа,
+- скорость (время шага, узкие места PCIe).
+
+---
+
+## Поддержать проект (повтор)
+
+👉 **[https://boosty.to/the_angel/donate](https://boosty.to/the_angel/donate)** — даже небольшая сумма помогает.
+
+---
+
+## Участники
+
+Автор: **The Angel Studio** ([@THE-ANGEL-AI](https://github.com/THE-ANGEL-AI))  
+Лицензия кода: **GPL-3.0-or-later**. Веса LTX 2.3 — **LTX-Video Community License** (см. раздел выше).
+
+Стоит на плечах:
+
+- [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) — деквантизация GGUF,
+- [pollockjj/ComfyUI-MultiGPU](https://github.com/pollockjj/ComfyUI-MultiGPU) — паттерн, который мы заменили,
+- [dreamfast/ComfyUI-LTX2-MultiGPU](https://github.com/dreamfast/ComfyUI-LTX2-MultiGPU) — образец структуры нод.
