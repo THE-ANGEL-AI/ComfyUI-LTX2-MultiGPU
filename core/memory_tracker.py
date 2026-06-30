@@ -72,6 +72,65 @@ def _resolve_path(name: str, *candidates: str) -> str | None:
     return None
 
 
+def _project(
+    strategy: str,
+    dit_gb: float,
+    gemma_gb: float,
+    components: dict[str, float],
+) -> tuple[float, float]:
+    """Per-strategy VRAM projection для pre-flight диагностики.
+
+    Extracted from nested closure in ``estimate_vram_budget`` → module-level
+    (v0.2.2-pre+) для:
+
+      1. **Direct importability** из ``tests/test_diagnostic_pipeline_matches_
+         memory_tracker.py`` — раньше был nested closure, tests MIRROR-или
+         math без валидации, что позволило standalone-CLI
+         ``scripts/diagnostic.py::project_strategy`` silent-drift's от in-package
+         проекции на ~2.55 GB LoR (FIX MED-4 в CHANGELOG v0.2.1).
+
+      2. **Возможный future reuse** из ``scripts/diagnostic.py`` —
+         пока две копии существуют независимо (acceptable duplication while
+         diagnostic.py остаётся stdlib-only standalone CLI).
+
+    Принцип LoRA-acct (FIX MED-4, v0.2.1):
+      LoRы мердджатся в DiT **перед** KSampler-loop → должны учитываться
+      на той карте, где лежит DiT:
+        - cuda:0 содержит DiT (``single_cuda0`` / ``blocks_*`` 0-share): +loras_gb
+        - cuda:1 содержит DiT (``single_cuda1`` / ``pipeline`` / ``blocks_*`` 1-share): +loras_gb
+    """
+    other_cuda0_gb = (
+        components.get("text_projection", 0.0)
+        + components.get("video_vae", 0.0)
+        + components.get("latent_upscaler", 0.0)
+        + components.get("sage_attention_scratch", 0.0)
+    )
+    other_cuda1_gb = (
+        components.get("audio_vae", 0.0)
+        + components.get("sage_attention_scratch", 0.0)
+    )
+    loras_gb = components.get("loras_estimate", 0.0)
+    if strategy == "single_cuda0":
+        return dit_gb + gemma_gb + other_cuda0_gb + loras_gb, other_cuda1_gb
+    if strategy == "single_cuda1":
+        return other_cuda0_gb, dit_gb + gemma_gb + other_cuda1_gb + loras_gb
+    if strategy == "pipeline":
+        # DiT целиком на cuda:1; Gemma + LoRы (мерджатся в DiT @ cuda:1) на cuda:1;
+        # Gemma занимает cuda:0 для encoder (text conditioning).
+        return gemma_gb + other_cuda0_gb, dit_gb + other_cuda1_gb + loras_gb
+    if strategy == "blocks_50_50":
+        return (
+            dit_gb / 2 + other_cuda0_gb + loras_gb,
+            dit_gb / 2 + gemma_gb + other_cuda1_gb,
+        )
+    if strategy == "blocks_30_70":
+        return (
+            dit_gb * 0.3 + other_cuda0_gb + loras_gb,
+            dit_gb * 0.7 + gemma_gb + other_cuda1_gb,
+        )
+    return 0.0, 0.0
+
+
 def gguf_estimate_bytes(gguf_path: str) -> tuple[int, int]:
     """Возвращает (total_elements, estimated_fp16_bytes) для GGUF-файла.
 
@@ -132,50 +191,8 @@ def estimate_vram_budget(
     # ── Gemma, VAE и прочие ─────────────────────────────────────────────────
     lines.append(f"Gemma {gemma_name}: ~{COMPONENT_FOOTPRINT_GB['gemma_fp4']:.2f} GB (FP4 + KV-cache est)")
     gemma_gb = COMPONENT_FOOTPRINT_GB["gemma_fp4"]
-    other_cuda0_gb = (
-        COMPONENT_FOOTPRINT_GB["text_projection"]
-        + COMPONENT_FOOTPRINT_GB["video_vae"]
-        + COMPONENT_FOOTPRINT_GB["latent_upscaler"]
-        + COMPONENT_FOOTPRINT_GB["sage_attention_scratch"]
-    )
-    other_cuda1_gb = (
-        COMPONENT_FOOTPRINT_GB["audio_vae"]
-        + COMPONENT_FOOTPRINT_GB["sage_attention_scratch"]
-    )
-    loras_gb = COMPONENT_FOOTPRINT_GB["loras_estimate"]
 
     # ── Прогноз для каждой стратегии ─────────────────────────────────────────
-    def _project(strategy: str) -> tuple[float, float]:
-        """Возвращает (cuda0_gb_load, cuda1_gb_load) для стратегии.
-
-        В v0.2.1 pipeline-strategy тоже включает ``loras_estimate`` (раньше был
-        silent-bug: LoRы мерджатся **перед** KSampler-loop в любой стратегии,
-        включая 'pipeline', но _project для pipeline их не учитывал → false-OK
-        projection → real OOM на user-machine с LoRA workload).
-
-        Принцип: где бы ни лежал DiT (primary или donor), туда и мерджится
-        LoRA перед sampling-loop. Поэтому:
-        - cuda:0 содержит DiT (single_cuda0 / blocks_* 0-share): +loras_gb
-        - cuda:1 содержит DiT (single_cuda1 / pipeline / blocks_* 1-share): +loras_gb
-        """
-        if strategy == "single_cuda0":
-            return dit_gb + gemma_gb + other_cuda0_gb + loras_gb, other_cuda1_gb
-        if strategy == "single_cuda1":
-            return other_cuda0_gb, dit_gb + gemma_gb + other_cuda1_gb + loras_gb
-        if strategy == "pipeline":
-            # DiT целиком на cuda:1; Gemma + LoRы (мерджатся в DiT @ cuda:1) на cuda:1;
-            # Gemma занимает cuda:0 для encoder (text conditioning).
-            return gemma_gb + other_cuda0_gb, dit_gb + other_cuda1_gb + loras_gb
-        if strategy == "blocks_50_50":
-            cuda0 = dit_gb / 2 + other_cuda0_gb + loras_gb
-            cuda1 = dit_gb / 2 + gemma_gb + other_cuda1_gb
-            return cuda0, cuda1
-        if strategy == "blocks_30_70":
-            cuda0 = dit_gb * 0.3 + other_cuda0_gb + loras_gb
-            cuda1 = dit_gb * 0.7 + gemma_gb + other_cuda1_gb
-            return cuda0, cuda1
-        return 0.0, 0.0
-
     lines.append("")
     lines.append("Стратегии: cuda:0_load / cuda:1_load vs доступно")
     free_per_card: list[tuple[int, float, float]] = []
@@ -186,7 +203,7 @@ def estimate_vram_budget(
     cap0 = free_per_card[0][2] if len(free_per_card) >= 1 else 15.0
     cap1 = free_per_card[1][2] if len(free_per_card) >= 2 else cap0
     for strategy in ("blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0"):
-        c0, c1 = _project(strategy)
+        c0, c1 = _project(strategy, dit_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)
         ok0 = "✓" if c0 <= cap0 else "✗"
         ok1 = "✓" if c1 <= cap1 else "✗"
         lines.append(
@@ -208,12 +225,15 @@ def estimate_vram_budget(
 
     # ── Рекомендация ────────────────────────────────────────────────────────
     lines.append("")
-    c0_b, c1_b = _project("blocks_50_50")
+    c0_b, c1_b = _project("blocks_50_50", dit_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)
     if c0_b <= cap0 and c1_b <= cap1:
         lines.append("РЕКОМЕНДАЦИЯ: blocks_50_50 (DiT 22B разделён пополам)")
-    elif _project("blocks_30_70")[1] <= cap1:
+    elif _project("blocks_30_70", dit_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)[1] <= cap1:
         lines.append("РЕКОМЕНДАЦИЯ: blocks_30_70 (меньше DiT на дальней карте)")
-    elif _project("pipeline")[0] <= cap0 and _project("pipeline")[1] <= cap1:
+    elif (
+        _project("pipeline", dit_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)[0] <= cap0
+        and _project("pipeline", dit_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)[1] <= cap1
+    ):
         lines.append("РЕКОМЕНДАЦИЯ: pipeline (DiT@cuda:1 + Gemma@cuda:0)")
     else:
         lines.append(
