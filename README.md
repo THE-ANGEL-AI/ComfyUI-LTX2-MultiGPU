@@ -2,7 +2,7 @@
 
 > Run **LTX 2.3 22B GGUF** across 2 GPUs without OOM. Built for Kaggle T4×2 (2 × 15 GB), tested on RTX 4090 / A5000 too.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![ComfyUI Custom Node](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
 [![Version](https://img.shields.io/badge/version-0.1.0-green.svg)]()
@@ -194,7 +194,7 @@ PRs welcome — particularly around:
 ## Credits
 
 Author: **The Angel Studio** ([@THE-ANGEL-AI](https://github.com/THE-ANGEL-AI))  
-License: **MIT** for this code. LTX 2.3 weights themselves are under the LTX-Video Community License — see the compatibility note above.
+License: **GPL-3.0-or-later** for this code. LTX 2.3 weights themselves are under the LTX-Video Community License — see the compatibility note above.
 
 Built on top of:
 
