@@ -3,7 +3,7 @@
   "last_link_id": 11,
   "version": "0.4.0",
   "name": "LTX 2.3 Strategy Hot-Switch Demo",
-  "description": "Демонстрация горячего переключения стратегий blocks_50_50→blocks_30_70 без перезагрузки модели. Автор: THE-ANGEL-AI (The Angel Studio).",
+  "description": "Демонстрация горячего переключения стратегий blocks_50_50→blocks_30_70 без перезагрузки модели. 5 из 7 нод. Автор: THE-ANGEL-AI (The Angel Studio).",
   "nodes": [
     {
       "id": 1,
@@ -17,7 +17,7 @@
       "outputs": [{"name": "report", "type": "STRING", "links": []}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
       "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
-      "title": "Диагностика (Q5_K_M → авто-выбор)"
+      "title": "🩺 Диагностика (Q5_K_M → авто-выбор)"
     },
     {
       "id": 2,
@@ -31,7 +31,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader"},
       "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf", "blocks_50_50", "auto", false],
-      "title": "Загрузка как blocks_50_50"
+      "title": "🔀 Загрузка как blocks_50_50"
     },
     {
       "id": 3,
@@ -45,7 +45,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [2], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_DeviceStrategy"},
       "widgets_values": ["blocks_30_70", "auto", false],
-      "title": "🔥 Hot-Switch: 50/50 → 30/70"
+      "title": "⚙️ Hot-Switch: 50/50 → 30/70"
     },
     {
       "id": 4,
@@ -59,7 +59,7 @@
       "outputs": [{"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader"},
       "widgets_values": ["gemma-3-12b-it-FP4.safetensors", "gemma-3-12b-it-FP4.safetensors", "cuda:1", false, false],
-      "title": "Gemma Encoder (cuda:1)"
+      "title": "📝 Dual CLIP (Gemma 3, cuda:1)"
     },
     {
       "id": 5,
@@ -114,7 +114,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [8], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_SageAttention"},
       "widgets_values": [true, false],
-      "title": "SageAttention (T4)"
+      "title": "⚡ SageAttention (T4 турбо)"
     },
     {
       "id": 9,
@@ -137,21 +137,17 @@
     },
     {
       "id": 10,
-      "type": "CheckpointLoaderSimple",
+      "type": "LTX2_MultiGPU_VAELoader",
       "pos": [1200, 50],
-      "size": [280, 100],
+      "size": [300, 120],
       "flags": {},
       "order": 9,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "MODEL", "type": "MODEL", "links": [], "slot_index": 0},
-        {"name": "CLIP", "type": "CLIP", "links": [], "slot_index": 1},
-        {"name": "VAE", "type": "VAE", "links": [10], "slot_index": 2}
-      ],
-      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
-      "widgets_values": ["vae/ltx_video_2_3_vae.safetensors"],
-      "title": "VAE Loader"
+      "outputs": [{"name": "vae", "type": "VAE", "links": [10], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_VAELoader"},
+      "widgets_values": ["ltx_video_2_3_vae.safetensors", "auto", false],
+      "title": "🖼️ VAE Загрузчик (GPU)"
     },
     {
       "id": 11,
@@ -187,7 +183,7 @@
       "id": 13,
       "type": "Note",
       "pos": [50, 680],
-      "size": [500, 180],
+      "size": [500, 200],
       "flags": {},
       "order": 12,
       "mode": 0,
@@ -195,7 +191,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "🔀 Strategy Hot-Switch — THE-ANGEL-AI v0.3.0\n\nДемо горячего переключения стратегий:\n• Загрузка как blocks_50_50\n• DeviceStrategy → blocks_30_70 БЕЗ перезагрузки!\n\nИспользуемые ноды:\n• MemoryDiagnostics (авто-выбор стратегии)\n• HybridSplitLoader (загрузка GGUF)\n• DeviceStrategy (hot-switch на лету)\n• GemmaHybridLoader (CLIP)\n• SageAttention (T4 ускорение)\n\nГорячее переключение ~1.5 сек."
+        "🔀 Strategy Hot-Switch — THE-ANGEL-AI v0.3.0\n\nДемо горячего переключения стратегий:\n• Загрузка как blocks_50_50\n• ⚙️ DeviceStrategy → blocks_30_70 БЕЗ перезагрузки!\n\nИспользуемые ноды (6 из 7):\n• 🩺 MemoryDiagnostics (авто-выбор стратегии)\n• 🔀 HybridSplitLoader (загрузка GGUF)\n• ⚙️ DeviceStrategy (hot-switch на лету)\n• 📝 GemmaHybridLoader (CLIP)\n• ⚡ SageAttention (T4 турбо)\n• 🖼️ VAE Loader (GPU)\n\nГорячее переключение ~1.5 сек."
       ],
       "title": "📋 Strategy Switch Demo"
     }
@@ -210,15 +206,15 @@
     {"id": 7,  "origin_id": 7,  "origin_slot": 0, "target_id": 9,  "target_slot": 3, "type": "LATENT"},
     {"id": 8,  "origin_id": 8,  "origin_slot": 0, "target_id": 9,  "target_slot": 0, "type": "MODEL"},
     {"id": 9,  "origin_id": 9,  "origin_slot": 0, "target_id": 11, "target_slot": 1, "type": "LATENT"},
-    {"id": 10, "origin_id": 10, "origin_slot": 2, "target_id": 11, "target_slot": 0, "type": "VAE"},
+    {"id": 10, "origin_id": 10, "origin_slot": 0, "target_id": 11, "target_slot": 0, "type": "VAE"},
     {"id": 11, "origin_id": 11, "origin_slot": 0, "target_id": 12, "target_slot": 0, "type": "IMAGE"}
   ],
   "groups": [
-    {"title": "1. Pre-flight Diagnostics", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
-    {"title": "2. Load + Hot-Switch", "bounding": [50, 240, 350, 400], "color": "#3f789e", "font_size": 18},
-    {"title": "3. Gemma CLIP", "bounding": [450, 240, 380, 690], "color": "#3f789e", "font_size": 18},
-    {"title": "4. SageAttn + KSampler", "bounding": [850, 240, 320, 480], "color": "#3f789e", "font_size": 18},
-    {"title": "5. VAE + Output", "bounding": [1200, 50, 380, 600], "color": "#3f789e", "font_size": 18}
+    {"title": "1. 🩺 Pre-flight Diagnostics", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
+    {"title": "2. 🔀 Load + ⚙️ Hot-Switch", "bounding": [50, 240, 350, 400], "color": "#3f789e", "font_size": 18},
+    {"title": "3. 📝 Dual CLIP", "bounding": [450, 240, 380, 690], "color": "#3f789e", "font_size": 18},
+    {"title": "4. ⚡ SageAttn + KSampler", "bounding": [850, 240, 320, 480], "color": "#3f789e", "font_size": 18},
+    {"title": "5. 🖼️ VAE + Output", "bounding": [1200, 50, 380, 600], "color": "#3f789e", "font_size": 18}
   ],
   "config": {},
   "extra": {
