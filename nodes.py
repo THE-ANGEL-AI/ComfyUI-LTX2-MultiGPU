@@ -76,10 +76,10 @@ class LTX2_MultiGPU_HybridSplitLoader:
     NODE_ID = "LTX2_MultiGPU_HybridSplitLoader"
     # Russian display name for users (grouped by CATEGORY).
     # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "Разделитель модели (2 GPU)"
+    DISPLAY_NAME = "🔀 Разделитель DiT (2×GPU)"
 
     FUNCTION = "load"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -171,10 +171,10 @@ class LTX2_MultiGPU_GemmaHybridLoader:
     NODE_ID = "LTX2_MultiGPU_GemmaHybridLoader"
     # Russian display name for users (grouped by CATEGORY).
     # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "Загрузчик промптов (Gemma 3)"
+    DISPLAY_NAME = "📝 Dual CLIP Загрузчик (Gemma 3)"
 
     FUNCTION = "load"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("CLIP",)
@@ -249,10 +249,10 @@ class LTX2_MultiGPU_MemoryDiagnostics:
     NODE_ID = "LTX2_MultiGPU_MemoryDiagnostics"
     # Russian display name for users (grouped by CATEGORY).
     # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "Диагностика видеопамяти"
+    DISPLAY_NAME = "🩺 Диагностика VRAM"
 
     FUNCTION = "diagnose"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = True  # для ui={'report': [report]}
 
     RETURN_TYPES = ("STRING",)
@@ -324,13 +324,13 @@ class LTX2_MultiGPU_DeviceStrategy:
     """Переключатель глобальной стратегии распределения через mm."""
 
     NODE_ID = "LTX2_MultiGPU_DeviceStrategy"
-    # Russian display name for users (grouped by CATEGORY="THE-ANGEL-AI / LTX-2 MultiGPU").
+    # Russian display name for users (grouped by CATEGORY="THE-ANGEL-AI").
     # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
     # so we don't repeat it here. NODE_ID (technical class key) preserved.
-    DISPLAY_NAME = "Переключатель стратегии"
+    DISPLAY_NAME = "⚙️ Стратегия GPU (hot-switch)"
 
     FUNCTION = "apply_strategy"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -399,10 +399,10 @@ class LTX2_MultiGPU_VRAMParking:
     """
 
     NODE_ID = "LTX2_MultiGPU_VRAMParking"
-    DISPLAY_NAME = "Парковка видеопамяти"
+    DISPLAY_NAME = "🅿️ Парковка DiT (VRAM↔CPU)"
 
     FUNCTION = "apply"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -460,10 +460,10 @@ class LTX2_MultiGPU_SageAttention:
     """
 
     NODE_ID = "LTX2_MultiGPU_SageAttention"
-    DISPLAY_NAME = "Патч SageAttention (T4)"
+    DISPLAY_NAME = "⚡ SageAttention (T4 турбо)"
 
     FUNCTION = "apply"
-    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
