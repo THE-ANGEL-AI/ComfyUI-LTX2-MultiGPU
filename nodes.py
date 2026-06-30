@@ -300,6 +300,12 @@ class LTX2_MultiGPU_DeviceStrategy:
                     ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
                     {"default": "blocks_50_50"},
                 ),
+                # NEW (v0.2.1): donor_device widget — раньше нода захардкодила
+                # ``secondary_dev`` из ``resolve_devices()``, из-за чего смена
+                # стратегии на лету ИГНОРИРОВАЛА user override из HybridSplitLoader.
+                # Теперь оба loadера (нода + HybridSplitLoader) могут горячо менять
+                # стратегию с учётом оригинального donor_device.
+                "donor_device": (_cuda_donor_choices(include_cpu=False), {"default": "auto"}),
             },
             "optional": {
                 # FIX MEDIUM_apply_strategy: forward verbose из UI-виджета в
@@ -309,11 +315,22 @@ class LTX2_MultiGPU_DeviceStrategy:
             },
         }
 
-    def apply_strategy(self, model, strategy: str, verbose_log: bool = False) -> tuple:
+    def apply_strategy(
+        self,
+        model,
+        strategy: str,
+        donor_device: str = "auto",
+        verbose_log: bool = False,
+    ) -> tuple:
         from core.gguf_split import apply_strategy as _apply
 
         try:
-            new_patcher = _apply(patcher=model, strategy=strategy, verbose=verbose_log)
+            new_patcher = _apply(
+                patcher=model,
+                strategy=strategy,
+                verbose=verbose_log,
+                donor_device=donor_device,
+            )
         except NotImplementedError as exc:
             raise RuntimeError(
                 f"ComfyUI-LTX2-MultiGPU: {exc}"

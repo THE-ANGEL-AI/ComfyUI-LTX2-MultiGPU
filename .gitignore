@@ -57,3 +57,6 @@ inputs/
 input/
 *.lock
 extra_model_paths.yaml
+
+# ─── Тесты (не пушим на GitHub — CI использует host machine, не remote) ───────
+/tests/

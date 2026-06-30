@@ -8,7 +8,7 @@ License: MIT
 """
 
 # VERSION синхронизирован с pyproject.toml (release v0.2.0, 2026-06-30)
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "The Angel Studio"
 
 NODE_CONFIG: list[dict] = [

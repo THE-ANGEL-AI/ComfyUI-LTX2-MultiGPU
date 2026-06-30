@@ -6,7 +6,7 @@
 [![Sponsor: Boosty](https://img.shields.io/badge/Sponsor-Boosty-orange.svg)](https://boosty.to/the_angel/donate)
 [![ComfyUI Custom Node](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-0.2.1-green.svg)]()
 
 > 🚧 **Скоро будет демо-GIF.** Положите файл `docs/hero.gif` (480p→720p прогон) в этот репозиторий, чтобы заменить этот блок. А пока просто добавьте ноду **LTX-2 Memory Diagnostics** перед KSampler — она покажет состояние обеих видеокарт в начале сессии.
 

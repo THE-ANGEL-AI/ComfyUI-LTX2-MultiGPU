@@ -290,6 +290,23 @@ def _lock_inner_to(inner: Any) -> None:
         inner._ltx2_original_to = inner.to  # type: ignore[attr-defined]
         original_to = inner._ltx2_original_to
 
+        def _is_device_arg(a: Any) -> bool:
+            """Отдельный тue/false для одного аргумента: device-like или нет.
+
+            Истино: ``torch.device('cuda:0')`` и строки ``'cuda'``/``'cuda:1'``/
+            ``'cpu'``/``'mps'``/``'xpu'``/``'hpu'`` (covers main device-strings).
+            Ложь: dtype/числа/None/всё остальное.
+            """
+            if torch is None:
+                return False
+            if isinstance(a, torch.device):
+                return True
+            if isinstance(a, str) and any(
+                a.startswith(p) for p in ("cuda", "cpu", "mps", "xpu", "hpu")
+            ):
+                return True
+            return False
+
         def _is_device_move(args: tuple, kwargs: dict) -> bool:
             """FIX HIGH #2 + MEDIUM #1: device-перенос — torch.device или
             'cuda*'/'cpu'/'mps'/'xpu'/'hpu' в args/kwargs.
@@ -300,28 +317,57 @@ def _lock_inner_to(inner: Any) -> None:
             if torch is None:
                 return False
             for a in args:
-                if isinstance(a, torch.device):
-                    return True
-                if isinstance(a, str) and any(
-                    a.startswith(p) for p in ("cuda", "cpu", "mps", "xpu", "hpu")
-                ):
+                if _is_device_arg(a):
                     return True
             return "device" in kwargs
 
-        def _no_op_to(*args: Any, **kwargs: Any) -> Any:
-            """FIX HIGH #2: блокируем только device-переносы sampler'а.
+        def _strip_device(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+            """Убирает device-args/kwargs, оставляя dtype/memory_format/non_blocking.
 
-            dtype / memory_format / другие не-device конверсии пропускаем
-            в original_to (KSampler иногда зовёт .to(memory_format=...) для
-            оптимизации, и это нельзя глотать).
+            Используется в ``_no_op_to`` чтобы блокировать **только** device-перенос,
+            но дать проходить сопутствующим модификациям (`dtype=`, `memory_format=`,
+            `non_blocking=True`, и пр.). Иначе KSampler после первого же нашего
+            split-блокирующего вызова получал бы «застрявшую» dtype-cast, а это
+            ведёт к sampler-uncacheable weight bites (review HIGH_FINAL_2).
+
+            NB: top-level only — НЕ рекурсивен по tuple/list/dict. Это согласованно
+            с реальной сигнатурой ``nn.Module.to()``, которая принимает только
+            scalar позиционные opts (device/dtype/non_blocking/memory_format).
+            Если когда-то появится nested device-bearing tuple (e.g. (some_callable,
+            ('cuda:0',))) — добавим рекурсию зеркалируя ``_move_inputs_to`` helper
+            в core/gguf_split.py:hidden_states-transport. Сейчас не нужно.
+            """
+            cleaned_args = tuple(a for a in args if not _is_device_arg(a))
+            cleaned_kwargs = {k: v for k, v in kwargs.items() if k != "device"}
+            return cleaned_args, cleaned_kwargs
+
+        def _no_op_to(*args: Any, **kwargs: Any) -> Any:
+            """FIX HIGH #2 (final): блокируем только device-переносы sampler'а,
+            но пробрасываем dtype/memory_format/non_blocking через original_to.
+
+            Бывшая ошибка (review HIGH_FINAL_1): если ComfyUI вызывал
+            ``inner.to(device='cuda:0', dtype=torch.float16)``, текущая
+            реализация просто возвращала ``inner`` — компиляция/optimization
+            sampler'а проглатывалась. Теперь: device args отфильтровываются,
+            всё остальное forward'ится в ``original_to``.
             """
             if not _is_device_move(args, kwargs):
+                # Pure non-device move (dtype / memory_format / non_blocking)
+                # — пропускаем как есть.
                 try:
                     return original_to(*args, **kwargs)
                 except Exception:  # noqa: BLE001
                     return inner
-            # device transfer — наш split запрещает blanket-перенос.
-            return inner
+            # Device-move detected: возвращаем original_to без device-args,
+            # чтобы dtype/memory_format/non_blocking дошли до nn.Module.to.
+            cleaned_args, cleaned_kwargs = _strip_device(args, kwargs)
+            if not cleaned_args and not cleaned_kwargs:
+                # Pure device move — наш split категорически воспрещает.
+                return inner
+            try:
+                return original_to(*cleaned_args, **cleaned_kwargs)
+            except Exception:  # noqa: BLE001
+                return inner
 
         inner.to = _no_op_to  # type: ignore[method-assign]
         inner._ltx2_to_locked = True  # type: ignore[attr-defined]
@@ -562,11 +608,16 @@ def hybrid_split_gguf(
     # = PCIe bottleneck и sampling stall. Forward_pre_hook остаётся primary→donor
     # даже если блоки коллапсировали на primary (N1 guard выше).
     try:
+        # NEW (v0.2.1): "effective_donor" key добавлен рядом с legacy "secondary" /
+        # "donor" для backward-compat. После MED-3 effective_donor может быть primary
+        # или secondary в зависимости от donor_device widget — поэтому "secondary"
+        # name misleading. Consumers должны читать "effective_donor" first.
         patcher.model_options["ltx2_multigpu_split"] = {
             "strategy": strategy,
             "primary": str(primary_dev),
-            "secondary": str(secondary_dev),
-            "donor": str(effective_donor),
+            "effective_donor": str(effective_donor),  # canonical post-v0.2.1
+            "secondary": str(secondary_dev),          # legacy (always = secondary)
+            "donor": str(effective_donor),            # legacy alias effective_donor
             "donor_spec": donor_device,
             "block_split_index": splits[0] if splits else None,
         }
@@ -1100,18 +1151,42 @@ def load_gemma_hybrid(
     return final_patcher
 
 
-def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  # noqa: ARG003
+def apply_strategy(
+    patcher: Any,
+    strategy: str,
+    verbose: bool = False,  # noqa: ARG003
+    donor_device: str = "auto",
+) -> Any:
     """Применяет новую стратегию к уже загруженному ModelPatcher.
+
+    ⚠️ **DiT-only**: предполагается, что ``patcher`` — это DiT ModelPatcher от
+    ``hybrid_split_gguf`` (44 transformer_blocks + diffusion_model attribute +
+    time_embed/adaln/etc outer layers). Для Gemma encoder patcher'а от
+    ``load_gemma_hybrid`` эта функция **НЕ предназначена** — Gemma split
+    (text_projection@primary + encoder@donor) делается в
+    ``load_gemma_hybrid`` и не подлежит hot-swap через apply_strategy. Если
+    в будущем понадобится apply_strategy для Gemma — нужна отдельная функция
+    с проекцией на Gemma layout (без ``_move_modules_with_prefix`` от
+    diffusion_model, без ``transformer_blocks`` lookup).
 
     NB: внутри использует cache модель — повторное перемещение блоков между
     GPU. Удаляет старые forward_hook'и через .modules() и пересоздаёт.
 
     Args:
-        patcher: уже-загруженный ModelPatcher (от ``hybrid_split_gguf``).
+        patcher: уже-загруженный DiT ModelPatcher (от ``hybrid_split_gguf``).
         strategy: одна из ``STRATEGIES``.
         verbose: deprecated — degenerate WARN печатается безусловно для UX
                  consistency с hybrid_split_gguf. Param сохранён в сигнатуре
                  для backward-compat c LTX2_MultiGPU_DeviceStrategy нодой.
+        donor_device: куда класть вторичную половину DiT / целиком DiT в
+                      pipeline / single_cuda1. Семантика зеркалирует
+                      ``hybrid_split_gguf``:
+                        - "auto"  → secondary_dev (default cuda:1)
+                        - "cuda:0"/"cuda:1" → raw override
+                        - "cpu"   → fallback на secondary_dev с WARN
+                                      (DiT не может жить на CPU между
+                                      sampling-шагами). Новый c v0.2.1 —
+                                      раньше hardcoded был secondary_dev.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy!r}; allowed: {STRATEGIES}")
@@ -1155,6 +1230,18 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
     _remove_stored_hooks(patcher)
 
     primary_dev, secondary_dev = resolve_devices()
+    # NEW (v0.2.1): donor_device resolve — раньше был хардкод secondary_dev.
+    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_is_cpu = str(donor_dev).startswith("cpu")
+    effective_donor = secondary_dev if donor_is_cpu else donor_dev
+    if donor_is_cpu:
+        # NEW (v0.2.1): WARN о cpu как donor для DiT — UNCONDITIONAL для
+        # UX consistency с hybrid_split_gguf. legacy-strategy-switch без
+        # verbose=LIVE давал silent fallback раньше.
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: donor_device='cpu' "
+            "отвергнут для DiT — fallback на secondary_dev."
+        )
     splits = _split_blocks_indices(strategy)
     is_pipeline = strategy == "pipeline"
     is_single0 = strategy == "single_cuda0"
@@ -1162,16 +1249,17 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
 
     # FIX MEDIUM_apply_strategy (final): degenerate guard в apply_strategy.
     # Нормализация применяется всегда + WARN печатается БЕЗ verbose_gate.
-    # Silent normalization = bad UX (юзер не знает что его split дегенерировал
+    # Silent normalization = bad UX (юззер не знает что его split дегенерировал
     # в single_cuda0 на single-GPU setup). Консистентно с hybrid_split_gguf.
     if (
-        secondary_dev == primary_dev
+        primary_dev == effective_donor
         and not is_single0
     ):
         print(
-            "[ComfyUI-LTX2-MultiGPU] WARN: single-GPU setup detected "
-            f"(secondary==primary); strategy={strategy!r} дегенерирует "
-            "в single_cuda0. Для multi-GPU split — установите вторую GPU."
+            "[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: effective_donor==primary_dev "
+            f"с strategy={strategy!r} → split дегенеративен "
+            "(обе половины DiT коллапсируют на cuda:0). "
+            "Нормализация → single_cuda0."
         )
         is_single0 = True
         is_single1 = False
@@ -1182,7 +1270,7 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
     if is_single0:
         target_dev = primary_dev
     elif is_single1 or is_pipeline:
-        target_dev = secondary_dev
+        target_dev = effective_donor
     else:
         target_dev = None
 
@@ -1192,11 +1280,11 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
     # Также carry EMBED_AND_HEAD_REL @ primary при split switch (могли остаться
     # на cuda:1 после whole-model стратегии) + defensive else-fallback для
     # пустых splits (избегаем silent no-op при добавлении новых strategy).
-    _original_inner_to = getattr(inner, "_ltx2_original_to", inner.to)
+    _inner_original_to = getattr(inner, "_ltx2_original_to", inner.to)
 
     if target_dev is not None:
         with mm.cuda_device_context(target_dev):
-            _original_inner_to(target_dev, non_blocking=False)
+            _inner_original_to(target_dev, non_blocking=False)
     elif blocks is not None and splits:
         split_idx = splits[0]
         with mm.cuda_device_context(primary_dev):
@@ -1208,12 +1296,12 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
             _move_modules_with_prefix(
                 diffusion, primary_dev, *EMBED_AND_HEAD_REL
             )
-        with mm.cuda_device_context(secondary_dev):
+        with mm.cuda_device_context(effective_donor):
             for i in range(split_idx, len(blocks)):
-                blocks[i].to(secondary_dev)
+                blocks[i].to(effective_donor)
         _remove_stored_hooks(patcher)
         handle = _install_cross_device_hook(
-            blocks[split_idx], primary_dev, secondary_dev
+            blocks[split_idx], primary_dev, effective_donor
         )
         if handle is not None:
             _store_hook(patcher, handle)
@@ -1223,21 +1311,29 @@ def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  
         # degenerate single-GPU + non-single0 после normalize) → whole-model
         # move @ primary, чтобы избежать silent no-op → runtime cross-device
         # OOM / device mismatch.
-        if verbose:
-            print(
-                f"[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: "
-                f"strategy={strategy!r} вернул splits={splits} и "
-                f"target_dev=None — fallback на whole-model move @ "
-                f"primary_dev={primary_dev}"
-            )
+        # UNCONDITIONAL WARN (per UX consistency с hybrid_split_gguf
+        # degenerate-guard и single-GPU normalize в apply_strategy выше —
+        # оба verbose-unconditional). verbose_gate здесь бы скрыл silent
+        # no-op от пользователей, что defeats purpose of defensive branch.
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: "
+            f"strategy={strategy!r} вернул splits={splits} и "
+            "target_dev=None — fallback на whole-model move @ "
+            f"primary_dev={primary_dev}"
+        )
         with mm.cuda_device_context(primary_dev):
-            _original_inner_to(primary_dev, non_blocking=False)
+            _inner_original_to(primary_dev, non_blocking=False)
 
     try:
+        # NEW (v0.2.1): effective_donor как canonical key, "secondary" оставлен как
+        # legacy alias для backward-compat. После MED-3 effective_donor может быть
+        # как primary, так и secondary — поэтому "secondary" name misleading.
         patcher.model_options["ltx2_multigpu_split"] = {
             "strategy": strategy,
             "primary": str(primary_dev),
-            "secondary": str(secondary_dev),
+            "effective_donor": str(effective_donor),  # canonical post-v0.2.1
+            "secondary": str(secondary_dev),          # legacy (always = secondary)
+            "donor_spec": donor_device,
             "block_split_index": splits[0] if splits else None,
         }
     except Exception:  # noqa: BLE001

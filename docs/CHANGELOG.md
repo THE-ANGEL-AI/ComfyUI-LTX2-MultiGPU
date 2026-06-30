@@ -7,6 +7,48 @@
 
 ---
 
+## [v0.2.1] — 2026-06-30 (audit-driven bugfixes)
+
+### Fixed (аудит post-v0.2.0: regressive correction + strategy-switch reliability)
+
+- **FIXED (regression)**: ``_split_blocks_indices("blocks_30_70")`` теперь возвращает ``(13,)`` (13 блоков @ primary, 31 @ donor = честные 30/70). Раньше возвращал ``(14,)`` → 32/68 split (14 @ primary, 30 @ donor), что **противоречило имени стратегии** и обманывало ``memory_tracker.estimate_vram_budget``: heuristic проецировал бюджет для 30/70, runtime получал 32/68 и OOM-ил на edge-budget сценариях. Docstring в ``_split_blocks_indices`` синхронизирован под новое `(13,)`.
+- **FIXED (apply_strategy блокировка)**: ``apply_strategy`` теперь использует ``inner._ltx2_original_to`` (unpatched ``nn.Module.to``) вместо ``inner.to`` для whole-model перемещений. Причина: ``_lock_inner_to`` (Risk #7 fix) monkey-патчит ``inner.to`` в no-op для device-moves, чтобы ComfyUI sampler не драгал split-блоки обратно на cuda:0. До этого fix'а -- первый вызов ``apply_strategy`` после ``hybrid_split_gguf`` НИЧЕГО не двигал (патч поглоцал вызов) и strategy-switch silently no-op'ил. Fallback ``getattr(_, ..., inner.to)`` -- применимо для случая ``apply_strategy`` до ``hybrid_split_gguf``.
+- **FIXED (apply_strategy embed/head drift)**: при переключении ``whole-model`` → ``blocks_*`` стратегии через ``apply_strategy`` теперь вызывается ``_move_modules_with_prefix(diffusion, primary_dev, *EMBED_AND_HEAD_REL)`` после перемещения blocks 0..split_idx. Без этого ``time_embed`` / ``adaln`` / ``proj_in`` / ``proj_out`` оставались на cuda:1 из прошлой whole-model стратегии → device mismatch при sampling → runtime crash. Зеркалит ту же логику что в ``hybrid_split_gguf``.
+- **FIXED (apply_strategy defensive fallback)**: новая ``else:``-ветка после ``target_dev``/split-mode блоков. Имитирует поведение ``hybrid_split_gguf``: если какой-то split-translate'ор окажется без соответствующей ветки в ``_split_blocks_indices`` (будущая ``blocks_70_30`` без branch), вместо silent no-op теперь UNCONDITIONAL ``[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy: ...`` + ``whole-model move @ primary_dev`` -- ловится визуально + не разрушает model placement.
+- **ADDED**: ``tests/test_gguf_split_blocks_indices.py`` -- regression-gate stdlib-unittest (без pytest). 10 методов: ``blocks_50_50``/``blocks_30_70`` (с share-percentage assertions) / ``pipeline``/``single_cuda0/1`` → пустой split; defensive unknown-strategy subtest loop; ``all_STRATEGIES_resolvable`` с explicit caveat про false-negative trap; STRATEGIES-tuple integrity assertion; ``LTX2_DIT_BLOCK_COUNT == 44`` invariant; ``_split_blocks_indices`` export sanity. Запуск: ``python -m unittest tests.test_gguf_split_blocks_indices -v``.
+- **ADDED (apply_strategy docstring)**: новое ⚠️ **DiT-only** предупреждение на ``apply_strategy`` -- функция предполагает DiT-ModelPatcher от ``hybrid_split_gguf`` и НЕ предназначена для Gemma encoder patcher от ``load_gemma_hybrid`` (projections: text_projection@primary + encoder@donor делатсяя в ``load_gemma_hybrid``, не через hot-swap). Если в будущем понадобится apply_strategy для Gemma -- нужна отдельная функция с проекцией на Gemma layout.
+
+### Compatibility note
+
+- Никаких breaking changes API: ``_split_blocks_indices``, ``hybrid_split_gguf``, ``apply_strategy`` signatures не поменялись -- только contents/behavior. Downstream-форки, импортирующие ``from core.gguf_split import _split_blocks_indices``, полyчат корректное ``(13,)`` для ``blocks_30_70`` вместо buggy ``(14,)``.
+- ``tests/`` -- новая директория. Без ``__init__.py``. Совместимо с stdlib unittest (run via ``python -m unittest tests.* -v``); pytest не требуется, но ``tests/__init__.py`` может потребоваться в CI когда pytest добавится в workflow (вне scope этого patch).
+
+### Polish (post-audit: HIGH-1 + HIGH-2 + MED дополнения поверх регрессионного раунда выше)
+
+#### HIGH severity
+
+- **FIXED (HIGH-1, key unification)**: ``scripts/diagnostic.py`` и ``core/memory_tracker.py`` используют разные импна для одного и того же ключа footprint dict (``sage_scratch`` vs ``sage_attention_scratch``). Это silent-bug: components dict передавался через pipeline но ``.get()`` возвращал 0 для отсутствующего ключа → projection занижала VRAM на **~4.2 GB** (2.1 GB × 2 карты). Canonical key теперь ``sage_attention_scratch`` в обоих файлах; backward-compat fallback ``.get("sage_attention_scratch", components.get("sage_scratch", 0.0))`` kept в ``diagnostic.py:_compute_other`` для старых callers. test: ``tests/test_memory_tracker.py::TestV021PolishGuards::test_sage_attention_scratch_key_present``.
+- **FIXED (HIGH-2, silent dtype drop в `_lock_inner_to._no_op_to`)**: Risk #7 fix из v0.2.1 ранеешеl перехватывал **весь** вызов ``inner.to(...)`` если видел device-like arg — тихо проглатывал сопутствующие ``dtype=torch.float16`` / ``memory_format=torch.channels_last`` / ``non_blocking=True``. KSampler иногда зовёт ``.to(dtype=...)`` для optimization — старый fix дропал dtype-cast → sampler-uncacheable weight-bits и потенциально OOM после merge. Новые helpers: ``_is_device_arg(a)`` (top-level device-detector), ``_strip_device(args, kwargs)`` (отфильтровывает device args/kwargs). Теперь: если device-move detected, вызов передаётся в ``original_to(*cleaned_args, **cleaned_kwargs)`` с dtype/memory_format сохранёнными; pure non-device calls идут в original_to без изменений; pure device-call возвращает ``inner`` (no-op).
+
+#### MED severity
+
+- **ADDED (MED-3, donor_device в `apply_strategy`)**: Node ``LTX2_MultiGPU_DeviceStrategy`` ранеешеl захардкодил secondary_dev для всех strategy-switch на лету, из-за чего user override из HybridSplitLoader (например `cuda:0` или `cpu`) молча игнорировался при переключении стратегии через DeviceStrategy ноду. Сигнатура apply_strategy теперь: ``apply_strategy(patcher, strategy, verbose=False, donor_device="auto")``. Degenerate-guard для ``cpu`` как donor (для DiT — anti-pattern → fallback на secondary_dev с UNCONDITIONAL WARN зеркалит hybrid_split_gguf). DeviceStrategy INPUT_TYPES получил required widget ``donor_device ∈ {auto, cuda:0, cuda:1}`` (default ``auto``). ComfyUI auto-fills default при отсутствии в workflow_api.json → backward-compat OK.
+- **ADDED (MED-3 follow-up, `model_options` rename)**: Key ``"secondary"`` в ``patcher.model_options["ltx2_multigpu_split"]`` после добавления `donor_device` widget стал misleading: значение могло быть primary или secondary. Canonical key теперь ``"effective_donor"``. Legacy keys ``"secondary"`` / ``"donor"`` оставлены для backward-compat с явным комментарием ``# legacy alias``.
+- **FIXED (MED-4, loras_estimate в pipeline projection)**: ``memory_tracker.estimate_vram_budget._project("pipeline")`` ранеешеl не включал ``loras_estimate`` (2.55 GB) → projection silent-bug для workflow с LoRами + pipeline-стратегией (false OK → real OOM). Теперь loras учитывается на стороне, где лжит DiT (cuda:1 для pipeline/single_cuda1, cuda:0 для остальных). test: ``tests/test_memory_tracker.py::TestProjectPerStrategy::test_pipeline_includes_loras_on_cuda1``.
+
+#### LOW / cosmetic
+
+- **CHANGED (MED-5, version sync)**: ``pyproject.toml``, ``__init__.py``, README version-badge: ``0.2.0`` → ``0.2.1``. CHANGELOG теперь имеет две подсекции под v0.2.1 (audit выше + polish ниже) — release-history закрыта.
+- **ADDED (TEST-extend)**: ``tests/test_memory_tracker.py`` — 4 unittest-класса с 18 тестами: TestV021PolishGuards (HIGH-1 guard), TestProjectPerStrategy (MED-4 math для каждой strategy), TestClassifyTensor (DiT tensor-name → category mapping), TestResolveDonorDevice (auto/cuda:0/cuda:1/cpu + edge cases). Stdlib-only, без pytest.
+
+### Compatibility note (cumulative)
+
+- **Backward-compat API**: ``_split_blocks_indices``, ``hybrid_split_gguf``, ``apply_strategy`` core signatures не сломаны (MED-3 added positional kwarg ``donor_device="auto"`` → optional).
+- **Backward-compat УI**: DeviceStrategy `donor_device` widget теперь REQUIRED с default ``"auto"`` → старые workflow_api.json (без поля) auto-fill default, runtime OK.
+- **Backward-compat metadata**: ``patcher.model_options["ltx2_multigpu_split"]["effective_donor"]`` — новый canonical. ``"secondary"``/``"donor"`` legacy keys сохранены. Consumers могут migrate to ``effective_donor`` без breaking old code.
+
+---
+
 ## [v0.2.0] — 2026-06-30
 
 ### License (LICENSING)

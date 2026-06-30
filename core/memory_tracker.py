@@ -142,23 +142,36 @@ def estimate_vram_budget(
         COMPONENT_FOOTPRINT_GB["audio_vae"]
         + COMPONENT_FOOTPRINT_GB["sage_attention_scratch"]
     )
+    loras_gb = COMPONENT_FOOTPRINT_GB["loras_estimate"]
 
-    # ── Прогноз для каждой стратегии ────────────────────────────────────────
+    # ── Прогноз для каждой стратегии ─────────────────────────────────────────
     def _project(strategy: str) -> tuple[float, float]:
-        """Возвращает (cuda0_gb_load, cuda1_gb_load) для стратегии."""
+        """Возвращает (cuda0_gb_load, cuda1_gb_load) для стратегии.
+
+        В v0.2.1 pipeline-strategy тоже включает ``loras_estimate`` (раньше был
+        silent-bug: LoRы мерджатся **перед** KSampler-loop в любой стратегии,
+        включая 'pipeline', но _project для pipeline их не учитывал → false-OK
+        projection → real OOM на user-machine с LoRA workload).
+
+        Принцип: где бы ни лежал DiT (primary или donor), туда и мерджится
+        LoRA перед sampling-loop. Поэтому:
+        - cuda:0 содержит DiT (single_cuda0 / blocks_* 0-share): +loras_gb
+        - cuda:1 содержит DiT (single_cuda1 / pipeline / blocks_* 1-share): +loras_gb
+        """
         if strategy == "single_cuda0":
-            return dit_gb + gemma_gb + other_cuda0_gb + COMPONENT_FOOTPRINT_GB["loras_estimate"], other_cuda1_gb
+            return dit_gb + gemma_gb + other_cuda0_gb + loras_gb, other_cuda1_gb
         if strategy == "single_cuda1":
-            return other_cuda0_gb, dit_gb + gemma_gb + other_cuda1_gb
+            return other_cuda0_gb, dit_gb + gemma_gb + other_cuda1_gb + loras_gb
         if strategy == "pipeline":
-            # DiT целиком на cuda:1; Gemma отдельно на cuda:0 (!!!)
-            return gemma_gb + other_cuda0_gb, dit_gb + other_cuda1_gb
+            # DiT целиком на cuda:1; Gemma + LoRы (мерджатся в DiT @ cuda:1) на cuda:1;
+            # Gemma занимает cuda:0 для encoder (text conditioning).
+            return gemma_gb + other_cuda0_gb, dit_gb + other_cuda1_gb + loras_gb
         if strategy == "blocks_50_50":
-            cuda0 = dit_gb / 2 + other_cuda0_gb + COMPONENT_FOOTPRINT_GB["loras_estimate"]
+            cuda0 = dit_gb / 2 + other_cuda0_gb + loras_gb
             cuda1 = dit_gb / 2 + gemma_gb + other_cuda1_gb
             return cuda0, cuda1
         if strategy == "blocks_30_70":
-            cuda0 = dit_gb * 0.3 + other_cuda0_gb + COMPONENT_FOOTPRINT_GB["loras_estimate"]
+            cuda0 = dit_gb * 0.3 + other_cuda0_gb + loras_gb
             cuda1 = dit_gb * 0.7 + gemma_gb + other_cuda1_gb
             return cuda0, cuda1
         return 0.0, 0.0
