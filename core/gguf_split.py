@@ -217,6 +217,13 @@ def _install_cross_device_hook(module: Any, src_device: Any, dst_device: Any) ->
     """
     if torch is None:
         return None
+    # Degenerative guard (FIX MEDIUM #4 здесь): если src==dst, hook не нужен —
+    # лишний overhead и не нужный autograd quirk.
+    try:
+        if torch.device(str(src_device)) == torch.device(str(dst_device)):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
 
     def _move(obj: Any) -> Any:
         if isinstance(obj, torch.Tensor):
@@ -229,12 +236,32 @@ def _install_cross_device_hook(module: Any, src_device: Any, dst_device: Any) ->
         if isinstance(obj, (tuple, list)):
             moved = [_move(x) for x in obj]
             return type(obj)(moved)
+        # FIX CRITICAL #1: kwargs и прочие вложенные структуры.
+        if isinstance(obj, dict):
+            return {k: _move(v) for k, v in obj.items()}
+        if isinstance(obj, set):
+            return {_move(x) for x in obj}
         return obj
 
-    def _pre_hook(_mod: Any, inputs: Any) -> Any:
-        return _move(inputs)
+    def _pre_hook(_mod: Any, args: Any, kwargs: Any = None) -> Any:
+        """FIX CRITICAL #1 + MEDIUM #2: ВСЕГДА возвращаем tuple ``(args, kwargs)``.
 
-    handle = module.register_forward_pre_hook(_pre_hook)
+        PyTorch 2.0+ ``with_kwargs=True`` ожидает КОНТРАКТ (module, args, kwargs)
+        → даже если kwargs пустой, возвращаем (args, {}) — иначе PyTorch
+        может дропнуть kwargs в edge-case.
+
+        Для 1.x fallback hook видит только args — legacy_branch возвращает
+        lambda без kwargs и не вызывается с with_kwargs=True.
+        """
+        moved_args = _move(args)
+        moved_kwargs = _move(kwargs) if kwargs is not None else {}
+        return moved_args, moved_kwargs
+
+    try:
+        handle = module.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+    except TypeError:
+        # Fallback для PyTorch < 2.0 — kwargs игнорируются.
+        handle = module.register_forward_pre_hook(lambda _m, a: _move(a))
     return handle
 
 
@@ -259,10 +286,41 @@ def _lock_inner_to(inner: Any) -> None:
     try:
         if getattr(inner, "_ltx2_to_locked", False):
             return
+        # Сохраняем настоящий to() ДО подмены.
         inner._ltx2_original_to = inner.to  # type: ignore[attr-defined]
+        original_to = inner._ltx2_original_to
+
+        def _is_device_move(args: tuple, kwargs: dict) -> bool:
+            """FIX HIGH #2 + MEDIUM #1: device-перенос — torch.device или
+            'cuda*'/'cpu'/'mps'/'xpu'/'hpu' в args/kwargs.
+
+            Defensive: если ``torch is None`` (модуль импортирован вне ComfyUI),
+            sampler всё равно без активен → пропускаем все вызовы в original_to.
+            """
+            if torch is None:
+                return False
+            for a in args:
+                if isinstance(a, torch.device):
+                    return True
+                if isinstance(a, str) and any(
+                    a.startswith(p) for p in ("cuda", "cpu", "mps", "xpu", "hpu")
+                ):
+                    return True
+            return "device" in kwargs
 
         def _no_op_to(*args: Any, **kwargs: Any) -> Any:
-            """No-op ``.to()`` — sampler НЕ может blanket-перенести DiT."""
+            """FIX HIGH #2: блокируем только device-переносы sampler'а.
+
+            dtype / memory_format / другие не-device конверсии пропускаем
+            в original_to (KSampler иногда зовёт .to(memory_format=...) для
+            оптимизации, и это нельзя глотать).
+            """
+            if not _is_device_move(args, kwargs):
+                try:
+                    return original_to(*args, **kwargs)
+                except Exception:  # noqa: BLE001
+                    return inner
+            # device transfer — наш split запрещает blanket-перенос.
             return inner
 
         inner.to = _no_op_to  # type: ignore[method-assign]
@@ -386,6 +444,26 @@ def hybrid_split_gguf(
     is_single1 = strategy == "single_cuda1"
     splits = _split_blocks_indices(strategy)
 
+    # FIX MEDIUM_apply_strategy (final): degenerate guard в hybrid_split_gguf.
+    # Нормализация применяется всегда + WARN печатается БЕЗ verbose_gate
+    # (UX consistency с apply_strategy: один из двух loaders выводит visible
+    # WARN, чтобы юзер не терялся в silent normalize).
+    if (
+        effective_donor == primary_dev
+        and not is_single0
+    ):
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: effective_donor==primary_dev "
+            f"с strategy={strategy!r} → split дегенеративен "
+            "(обе половины DiT коллапсируют на cuda:0). "
+            "Нормализация → single_cuda0."
+        )
+        is_single0 = True
+        is_single1 = False
+        is_pipeline = False
+        strategy = "single_cuda0"
+        splits = ()
+
     # Strategy-логика (обновлена для donor_device):
     #   pipeline    → весь DiT на effective_donor (default auto→secondary=cuda:1)
     #   single_cuda0→ весь DiT на primary_dev (явное имя, donor ignored)
@@ -397,20 +475,6 @@ def hybrid_split_gguf(
         target_dev = effective_donor
     else:
         target_dev = None  # split mode — разные device для разных блоков
-
-    # N1 (review): degenerate guard — если user случайно поднял donor на primary,
-    # blocks_* / pipeline / single1 схлопываются в single_cuda0 silently.
-    if (
-        effective_donor == primary_dev
-        and not is_single0
-        and verbose
-    ):
-        print(
-            "[ComfyUI-LTX2-MultiGPU] WARN: effective_donor==primary_dev "
-            f"с strategy={strategy!r} → split дегенеративен (обе половины "
-            "DiT коллапсируют на cuda:0). Используйте single_cuda0 явно "
-            "или поменяйте donor_device на 'auto'/'cuda:1'."
-        )
 
     if verbose:
         print(
@@ -666,6 +730,36 @@ def _looks_like_proj_path(name: str) -> bool:
     )
 
 
+def _move_param(p: Any, device: Any) -> bool:
+    """FIX LOW #5 + MEDIUM #3: in-place move ``nn.Parameter`` в ``device``.
+
+    Использует ``torch.no_grad()`` чтобы autograd не path'ил data reassign.
+    Возвращает True ТОЛЬКО если torch доступен И move успешен.
+    Defensive при ``torch is None`` — мы за пределами ComfyUI runtime,
+    и inference невозможен; статический return False здесь OK.
+    """
+    if torch is None:
+        return False
+    try:
+        with torch.no_grad():
+            p.data = p.data.to(device, non_blocking=False)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _move_buffer(b: Any, device: Any) -> bool:
+    """FIX LOW #5 + MEDIUM #3: in-place move registered buffer в ``device``."""
+    if torch is None:
+        return False
+    try:
+        with torch.no_grad():
+            b.data = b.data.to(device, non_blocking=False)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def load_gemma_hybrid(
     encoder_name: str,
     projection_name: str,
@@ -802,15 +896,13 @@ def load_gemma_hybrid(
         for pname, p in list(inner.named_parameters()):
             if "text_projection" not in pname.lower() and not _looks_like_proj_path(pname):
                 continue
-            try:
-                p.data = p.data.to(primary_dev, non_blocking=False)
+            if _move_param(p, primary_dev):
                 proj_param_count += 1
-            except Exception as exc:  # noqa: BLE001
-                if verbose:
-                    print(
-                        f"[ComfyUI-LTX2-MultiGPU] WARN: proj param {pname!r} → "
-                        f"{primary_dev} failed: {exc}"
-                    )
+            elif verbose:
+                print(
+                    f"[ComfyUI-LTX2-MultiGPU] WARN: proj param {pname!r} → "
+                    f"{primary_dev} failed (torch=None или device mismatch)"
+                )
 
     # Parametры encoder → donor_dev
     # Если donor_device='cpu' — пропускаем move: encoder остаётся на исходном
@@ -820,15 +912,13 @@ def load_gemma_hybrid(
             for pname, p in list(inner.named_parameters()):
                 if "text_projection" in pname.lower() or _looks_like_proj_path(pname):
                     continue
-                try:
-                    p.data = p.data.to(donor_dev, non_blocking=False)
+                if _move_param(p, donor_dev):
                     encoder_param_count += 1
-                except Exception as exc:  # noqa: BLE001
-                    if verbose:
-                        print(
-                            f"[ComfyUI-LTX2-MultiGPU] WARN: encoder param {pname!r} → "
-                            f"{donor_dev} failed: {exc}"
-                        )
+                elif verbose:
+                    print(
+                        f"[ComfyUI-LTX2-MultiGPU] WARN: encoder param {pname!r} → "
+                        f"{donor_dev} failed (torch=None или device mismatch)"
+                    )
     elif verbose:
         encoder_param_count = sum(
             1 for _ in inner.named_parameters()
@@ -845,19 +935,13 @@ def load_gemma_hybrid(
         for bname, b in list(inner.named_buffers()):
             if "text_projection" not in bname.lower() and not _looks_like_proj_path(bname):
                 continue
-            try:
-                b.data = b.data.to(primary_dev, non_blocking=False)
-            except Exception:  # noqa: BLE001
-                pass
+            _move_buffer(b, primary_dev)
     if not donor_is_cpu:
         with mm.cuda_device_context(donor_dev):
             for bname, b in list(inner.named_buffers()):
                 if "text_projection" in bname.lower() or _looks_like_proj_path(bname):
                     continue
-                try:
-                    b.data = b.data.to(donor_dev, non_blocking=False)
-                except Exception:  # noqa: BLE001
-                    pass
+                _move_buffer(b, donor_dev)
 
     if verbose:
         print(
@@ -870,40 +954,60 @@ def load_gemma_hybrid(
     #   embed_tokens (cuda:1) → layers 0..N (cuda:1) → text_projection (cuda:0)
     # Последний hidden_states выходит с cuda:1 (encoder), proj ждёт с cuda:0.
     # Без hook'а PyTorch кинет RuntimeError при .to() mismatch.
-    def _move_inputs_to_primary(_mod: Any, inputs: Any) -> Any:
-        if torch is None:
-            return inputs
-        if isinstance(inputs, torch.Tensor):
-            return inputs.to(primary_dev, non_blocking=True)
-        if isinstance(inputs, (tuple, list)):
-            return type(inputs)(
-                x.to(primary_dev, non_blocking=True) if isinstance(x, torch.Tensor) else x
-                for x in inputs
-            )
-        return inputs
+    def _move_inputs_to(obj: Any) -> Any:
+        """FIX CRITICAL #1 + MEDIUM #3: рекурсивный move по Tensor/tuple/list/dict/set.
 
-    proj_parent_module = None
-    for name, mod in inner.named_modules():
-        children_names = {cn for cn, _ in mod.named_children()}
-        if any(
-            cn == "text_projection"
-            or cn.endswith(".text_projection")
-            for cn in children_names
-        ):
-            proj_parent_module = mod
-            break
+        kwargs для forward_pre_hook(PyTorch 2.0+ with_kwargs=True) тоже поддерживаются
+        (через вызывающий _proj_pre_hook).
+        """
+        if torch is None:
+            return obj
+        if isinstance(obj, torch.Tensor):
+            if obj.device == primary_dev:
+                return obj
+            try:
+                return obj.to(primary_dev, non_blocking=True)
+            except Exception:  # noqa: BLE001
+                return obj.to(primary_dev)
+        if isinstance(obj, (tuple, list)):
+            return type(obj)(_move_inputs_to(x) for x in obj)
+        if isinstance(obj, dict):
+            return {k: _move_inputs_to(v) for k, v in obj.items()}
+        if isinstance(obj, set):
+            return {_move_inputs_to(x) for x in obj}
+        return obj
+
+    def _proj_pre_hook(_mod: Any, args: Any, kwargs: Any = None) -> Any:
+        """FIX CRITICAL #1 + MEDIUM #2: всегда возвращаем tuple ``(args, kwargs)``."""
+        moved_args = _move_inputs_to(args)
+        moved_kwargs = _move_inputs_to(kwargs) if kwargs is not None else {}
+        return moved_args, moved_kwargs
+
+    # FIX MEDIUM #3: ищем САМ модуль `text_projection` (не его parent).
+    # parent-search хрупок — если ComfyUI завернёт proj в дополнительный layer,
+    # hook не навесится. Прямой подвес на сам модуль проще и устойчивее.
+    proj_module = None
+    if torch is not None:
+        for modname, mod in inner.named_modules():
+            if modname == "text_projection" or modname.endswith(".text_projection"):
+                proj_module = mod
+                break
 
     if (
-        proj_parent_module is not None
+        proj_module is not None
         and torch is not None
-        and hasattr(proj_parent_module, "register_forward_pre_hook")
+        and hasattr(proj_module, "register_forward_pre_hook")
     ):
-        handle = proj_parent_module.register_forward_pre_hook(
-            _move_inputs_to_primary
-        )
+        try:
+            handle = proj_module.register_forward_pre_hook(
+                _proj_pre_hook, with_kwargs=True
+            )
+        except TypeError:
+            # PyTorch < 2.0 fallback.
+            handle = proj_module.register_forward_pre_hook(
+                lambda _m, a: _move_inputs_to(a)
+            )
         if handle is not None:
-            # Per-patcher cleanup, srijithr паттерн: запомним чтобы можно было
-            # снять при apply_strategy/cleanup.
             try:
                 _store_hook(patcher_obj, handle)
             except Exception:  # noqa: BLE001
@@ -994,11 +1098,18 @@ def load_gemma_hybrid(
     return final_patcher
 
 
-def apply_strategy(patcher: Any, strategy: str) -> Any:
+def apply_strategy(patcher: Any, strategy: str, verbose: bool = False) -> Any:  # noqa: ARG003
     """Применяет новую стратегию к уже загруженному ModelPatcher.
 
     NB: внутри использует cache модель — повторное перемещение блоков между
     GPU. Удаляет старые forward_hook'и через .modules() и пересоздаёт.
+
+    Args:
+        patcher: уже-загруженный ModelPatcher (от ``hybrid_split_gguf``).
+        strategy: одна из ``STRATEGIES``.
+        verbose: deprecated — degenerate WARN печатается безусловно для UX
+                 consistency с hybrid_split_gguf. Param сохранён в сигнатуре
+                 для backward-compat c LTX2_MultiGPU_DeviceStrategy нодой.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy!r}; allowed: {STRATEGIES}")
@@ -1046,6 +1157,25 @@ def apply_strategy(patcher: Any, strategy: str) -> Any:
     is_pipeline = strategy == "pipeline"
     is_single0 = strategy == "single_cuda0"
     is_single1 = strategy == "single_cuda1"
+
+    # FIX MEDIUM_apply_strategy (final): degenerate guard в apply_strategy.
+    # Нормализация применяется всегда + WARN печатается БЕЗ verbose_gate.
+    # Silent normalization = bad UX (юзер не знает что его split дегенерировал
+    # в single_cuda0 на single-GPU setup). Консистентно с hybrid_split_gguf.
+    if (
+        secondary_dev == primary_dev
+        and not is_single0
+    ):
+        print(
+            "[ComfyUI-LTX2-MultiGPU] WARN: single-GPU setup detected "
+            f"(secondary==primary); strategy={strategy!r} дегенерирует "
+            "в single_cuda0. Для multi-GPU split — установите вторую GPU."
+        )
+        is_single0 = True
+        is_single1 = False
+        is_pipeline = False
+        strategy = "single_cuda0"
+        splits = ()
 
     if is_single0:
         target_dev = primary_dev
