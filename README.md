@@ -130,6 +130,16 @@ pip install -r requirements.txt
 
 Хотите сменить стратегию на лету? Подключите **LTX-2 Device Strategy Switch** между лоадером и KSampler.
 
+В **LTX-2 Hybrid Split Loader** и **LTX-2 Device Strategy Switch** доступен виджет `donor_device`:
+
+| donог_device | Семантика |
+|---|---|
+| `auto` *(по умолчанию)* | Secondary device из ComfyUI (обычно cuda:1 в dual-GPU). |
+| `cuda:0` | Явно — **primary** карта (даже для pipeline/single_cuda1, где DiT идёт на secondary). |
+| `cuda:1` | Явно — **secondary** карта (override авто-выбора). |
+
+Зачем это нужно: если у вас асимметричное железо (RTX 3090 + RTX 3060) или специфическая раскладка, где вы хотите вручную задать, на какой карте лежит вторая половина DiT. В `auto`-режиме (по умолчанию) всё работает без ручных tweak'ов.
+
 ---
 
 ## Почему так получилось? (техническая часть)
