@@ -46,12 +46,13 @@ def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
             n = int(torch.cuda.device_count())
             for i in range(n):
                 choices.append(f"cuda:{i}")
-        except Exception:  # noqa: BLE001
+        except (RuntimeError, AssertionError):
             pass
-        # Гарантируем минимум cuda:0/cuda:1 как realistic defaults для dual-GPU.
-        for tag in ("cuda:0", "cuda:1"):
-            if tag not in choices:
-                choices.append(tag)
+    # Базовые cuda:0/cuda:1 присутствуют ВСЕГДА — это не зависит от torch
+    # (сохраняет контракт исходного _DONOR_DEVICE_CHOICES_DIT).
+    for tag in ("cuda:0", "cuda:1"):
+        if tag not in choices:
+            choices.append(tag)
     if include_cpu:
         choices.append("cpu")
     return choices
@@ -301,7 +302,9 @@ class LTX2_MultiGPU_DeviceStrategy:
                 ),
             },
             "optional": {
-                # FIX MEDIUM_apply_strategy: пропускаем verbose для дегенеративного warn.
+                # FIX MEDIUM_apply_strategy: forward verbose из UI-виджета в
+                # core.apply_strategy(verbose=verbose_log). WARN уже unconditional
+                # в core (cab22dc), verbose используется для детального per-block лога.
                 "verbose_log": ("BOOLEAN", {"default": False}),
             },
         }

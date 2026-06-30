@@ -1,5 +1,7 @@
 # GitHub funding configuration
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+#
+# Соседний meta-файл в этом репо: deep-docs (КРОМЕ README.md) лежат в /docs/ — Security / Contributing / Changelog переехали туда чтобы держать root чистым от GitHub-facing documentation при будущем расширении ноды.
 
 # У этого проекта нет аккаунта GitHub Sponsors, Boosty указан как custom URL.
 github: []

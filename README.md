@@ -197,6 +197,18 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 
 ---
 
+## Документы проекта
+
+Подробная документация проекта лежит в папке [`docs/`](docs/):
+
+* [**CHANGELOG.md**](docs/CHANGELOG.md) — история изменений по версиям (Keep-a-Changelog формат, semver).
+* [**SECURITY.md**](docs/SECURITY.md) — полиция безопасности: как сообщать об уязвимостях, supported-versions, response-timeline, GPL-3.0 downstream-copyleft notes.
+* [**CONTRIBUTING.md**](docs/CONTRIBUTING.md) — для контрибьюторов: fork/branch/PR, Conventional Commits, DCO sign-off, code-style.
+
+Все три файла распознаются GitHub'ом автоматически (см. <https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file>).
+
+--
+
 ## Хочется поковыряться
 
 Самое интересное живёт в двух файлах:

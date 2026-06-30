@@ -62,7 +62,7 @@ URL: `https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/security/advisories/
 | **Acknowledgment** | **≤ 7 дней** | Подтверждаем получение, даём initial severity (critical / high / medium / low / not-a-vuln / incomplete) |
 | **Investigation** | **≤ 30 дней** | Воспроизводим на нашем CI-staging (T4×2 Kaggle / RTX 4090×2 / A5000+3090), готовим patch в private fork |
 | **Coordinated disclosure** | договариваемся | Если репортёр хочет CVE — обсуждаем timeline (стандарт: 90 дней). Если нет — публикуем GHSA + release ASAP. |
-| **Public release** | после fix | `v0.2.x` patch-релиз + GitHub Security Advisory (публичная) + обновление `CHANGELOG.md` § `### Security` |
+| **Public release** | после fix | `v0.2.x` patch-релиз + GitHub Security Advisory (публичная) + обновление `./CHANGELOG.md` § `### Security` |
 
 Если репорт признан **"not-a-vulnerability"**, мы ответим с обоснованием (например: "документированное поведение", "upstream-cause", "не наш код"). Функциональный баг при этом **не теряется** — отдельно заводим public Issue с `bug` label.
 
@@ -87,13 +87,13 @@ URL: `https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/security/advisories/
 * Если вы обнаружили уязвимость в форке **под GPL-3.0** и решаете её — вы **обязаны** либо сообщить upstream (нас), либо опубликовать fix в своём форке под GPL-3.0 в течение разумного срока. «Тихий» fix в проприетарной ветке, скрывающий уязвимость — это конфликт с **GPL §2 / §5** (Conveying Modified Source Versions).
 * Если вы форкнули **до 2026-06-30** (под MIT) — лицензия **вашего снимка** остаётся MIT (perpetual grant от старой лицензии), и вы сами решаете, как обрабатывать уязвимости.
 
-Подробности — в `LICENSE` (полный текст GPL-3.0) и § `### Security (copyleft implications)` в `CHANGELOG.md`.
+Подробности — в [`../LICENSE`](../LICENSE) (полный текст GPL-3.0) и § `### Security (copyleft implications)` в [`./CHANGELOG.md`](./CHANGELOG.md).
 
 ---
 
 ## Версия этой политики
 
-* **v1.0** — initial publication (2026-06-30), синхронно с release v0.2.0 / `CHANGELOG.md` §Security.
+* **v1.0** — initial publication (2026-06-30), синхронно с release v0.2.0 / [`./CHANGELOG.md`](./CHANGELOG.md) §Security.
 
 Maintainer: **The Angel Studio** · Contact: `gi.the.angel@gmail.com` · Repo: `https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU`
 

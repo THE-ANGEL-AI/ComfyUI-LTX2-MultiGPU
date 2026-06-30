@@ -34,7 +34,7 @@
 
 ### Funding (финансирование)
 
-- **ADDED**: `submodule/.github/FUNDING.yml` — нативная GitHub-кнопка Sponsor →
+- **ADDED**: `.github/FUNDING.yml` — нативная GitHub-кнопка Sponsor →
   Boosty (`custom: ["https://boosty.to/the_angel/donate"]`). GitHub читает этот
   файл из root репозитория и рендерит Sponsor-кнопку в правом sidebar.
 - **ADDED**: README — Boosty-badge `[![Sponsor: Boosty](orange.svg)]` в шапке.
