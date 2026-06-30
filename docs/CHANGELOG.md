@@ -7,7 +7,7 @@
 
 ---
 
-## [v0.3.0-pre] — 2026-06-30 (Kaggle Edition: VRAM parking, SageAttention, memory tracker)
+## [v0.3.0-pre] — 2026-06-30 (Kaggle Edition: VRAM parking, SageAttention, VAE Loader, rebrand)
 
 ### Added (новые фичи)
 
@@ -37,9 +37,58 @@
   - Совместимость: legacy `gguf_estimate_bytes()` сохранён.
 
 - **example_workflows/** — 3 готовых воркфлоу JSON для импорта в ComfyUI:
-  - `ltx2_full_2pass_video.json` — полный 2-pass пайплайн со всеми 6 нодами.
+  - `ltx2_full_2pass_video.json` — полный 2-pass пайплайн со всеми 7 нодами.
   - `ltx2_strategy_switch.json` — демо горячего переключения стратегий.
   - `ltx2_diagnostics_first.json` — pre-flight сравнение 4 quant-типов.
+
+- **VAE Loader с выбором GPU (node 7/7)** — нода `LTX2_MultiGPU_VAELoader`
+  (`🖼️ VAE Загрузчик (GPU)`). Загружает VAE через `comfy.sd.load_vae()` и
+  размещает `first_stage_model` на выбранном GPU (`donor_device`:
+  auto/cuda:0/cuda:1/cpu). Совместим с VAE Decode/Encode — возвращает
+  `("VAE",)`. Позволяет разгрузить cuda:0 от VAE во время decode/encode
+  на T4×2 (14.5 GB каждая).
+
+- **ComfyUI-Manager PR** — подана заявка на регистрацию в центральной базе
+  `custom-node-list.json` (PR #3037 в `Comfy-Org/ComfyUI-Manager`).
+  После merge: автор = THE-ANGEL-AI, click-through URL = наш репо,
+  `dreamfast` навсегда вытеснен из Manager UI.
+
+### Changed (ребрендинг + UX)
+
+- **CATEGORY → `"THE-ANGEL-AI"`** (все 7 нод). Было `"THE-ANGEL-AI / LTX-2 MultiGPU"` —
+  дублирование бренда в subcategory создавало шум в ComfyUI Add Node меню.
+  Теперь чистое уникальное имя.
+
+- **DISPLAY_NAME с эмодзи** (все 7 нод). Современные названия с иконками:
+  🔀 Разделитель DiT (2×GPU), 📝 Dual CLIP Загрузчик (Gemma 3),
+  🩺 Диагностика VRAM, ⚙️ Стратегия GPU (hot-switch),
+  🅿️ Парковка DiT (VRAM↔CPU), ⚡ SageAttention (T4 турбо),
+  🖼️ VAE Загрузчик (GPU).
+
+- **GemmaHybridLoader → Dual CLIP** — `DISPLAY_NAME` изменён с
+  `"Загрузчик промптов (Gemma 3)"` на `"📝 Dual CLIP Загрузчик (Gemma 3)"`
+  по запросу пользователя («не загрузчик промптов, а Dual CLIP / текстовый
+  энкодер»).
+
+- **pyproject.toml**: добавлен `Icon = "assets/icon.png"` (128×128, brand color
+  `#3B379E`). Иконка отображается в ComfyUI Manager.
+
+- **__init__.py docstring**: обновлён под 7 нод и новую CATEGORY.
+
+### Fixed (dropdown-баг)
+
+- **FIX dropdown-bug (nodes.py)**: `if choices:` guard в `INPUT_TYPES` срезал
+  dropdown-формат `(choices,)` когда `folder_paths.get_filename_list()`
+  возвращал пустой список — ComfyUI показывал голое текстовое поле
+  `("STRING", ...)` вместо выпадающего списка. Затронуты 3 ноды:
+  HybridSplitLoader (`unet_name`), GemmaHybridLoader (`clip_name1` +
+  `projection_name`), MemoryDiagnostics (`unet_name` + `gemma_name`).
+  Теперь dropdown рендерится всегда (даже пустой).
+
+- **FIX (GemmaHybridLoader/MemoryDiagnostics)**: file-picker'ы для Gemma
+  (.safetensors) теперь объединяют файлы из **обеих** папок —
+  `text_encoders/` И `clip/` — через `dict.fromkeys()` dedup.
+  Раньше каждый виджет смотрел только в одну папку.
 
 ### Fixed (критические исправления)
 
@@ -50,18 +99,20 @@
 
 ### Changed (изменения)
 
-- **nodes.py**: добавлены ноды 5 (`VRAMParking`) и 6 (`SageAttention`).
-  Всего 6 нод в `NODE_CLASS_MAPPINGS`.
-- **pyproject.toml**: `Publisher=THE-ANGEL-AI`, `PublisherEmail=gi.the.angel@gmail.com`,
-  `DisplayName=LTX-2 MultiGPU Hybrid Split`, `Icon=assets/icon.png`.
+- **nodes.py**: добавлены ноды 5 (`VRAMParking`), 6 (`SageAttention`),
+  7 (`VAELoader`). Всего 7 нод в `NODE_CLASS_MAPPINGS`.
+- **pyproject.toml**: `author="THE-ANGEL-AI"`, `PublisherId="THE-ANGEL-AI"`,
+  `Icon="assets/icon.png"`, `reference="https://github.com/THE-ANGEL-AI/..."`,
+  `DisplayName="LTX-2 MultiGPU"`.
 - **README.md**: миграционная заметка для пользователей dreamfast.
 
 ### Test coverage
 
 - `tests/test_vram_parking.py` — 11 тестов (идемпотентность, round-trip, missing config).
 - `tests/test_sage_attention.py` — 9 тестов (мокинг `sys.modules`, делегирование wrapper).
-- `tests/test_init.py` / `tests/test_nodes.py` — обновлены под 6 нод.
-- Все тесты (6 модулей, 89 тестов) проходят: `python -m unittest discover tests -v`.
+- `tests/test_init.py` / `tests/test_nodes.py` — обновлены под 7 нод
+  (+ VAE Loader контракт, + TestVAELoaderWidgets, CATEGORY/эмодзи/DISPLAY_NAME).
+- Все тесты (6 модулей, 119 тестов) проходят: `python -m unittest discover tests -v`.
 
 ---
 
