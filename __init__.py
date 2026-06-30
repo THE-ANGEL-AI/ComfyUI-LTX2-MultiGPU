@@ -5,7 +5,7 @@
   Repo:            https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU
   Sponsor:         https://boosty.to/the_angel/donate
   License:         GPL-3.0-or-later (см. LICENSE)
-  Display category: "LTX-2 MultiGPU" (4 ноды: Разделитель / Загрузчик промптов / Диагностика / Переключатель стратегии)
+  Display category: "THE-ANGEL-AI / LTX-2 MultiGPU" (6 нод: Разделитель / Загрузчик промптов / Диагностика / Переключатель / Парковка / SageAttention)
 
   Независимая разработка для конфигурации 2×15 ГБ (T4×2 / Kaggle) с
   долгой оптимизацией под этот железный профиль (см. CHANGELOG).
@@ -18,7 +18,7 @@
 узле НЕ должен ломать загрузку всего пакета (видно в меню Add Node).
 """
 
-__version__ = "0.2.2-pre"
+__version__ = "0.3.0-pre"
 __author__ = "The Angel Studio"
 __author_email__ = "gi.the.angel@gmail.com"
 __author_github__ = "THE-ANGEL-AI"

@@ -8,7 +8,7 @@ description = "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2x T4 (Kaggle).
 # пробрасываются в original_to при device-move. MED дополнения: donor_device
 # в apply_strategy + DeviceStrategy INPUT_TYPES; loras_estimate в pipeline
 # projection (memory_tracker._project()). См. CHANGELOG v0.2.1 details.
-version = "0.2.2-pre"
+version = "0.3.0-pre"
 license = { text = "GPL-3.0-or-later" }
 authors = [
     { name = "The Angel Studio", email = "gi.the.angel@gmail.com" }
@@ -25,9 +25,15 @@ Repository = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
 Issues = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/issues"
 
 # ComfyUI Registry conventions (https://docs.comfy.org/registry/specifications)
+#
+# ComfyUI Manager читает author + name + PublisherId для атрибуции.
+# Все три поля должны указывать на THE-ANGEL-AI, иначе Manager
+# показывает чужое авторство (dreamfast) из кеша custom-node-list.json.
 [tool.comfy]
 PublisherId = "THE-ANGEL-AI"
 DisplayName = "LTX-2 MultiGPU"
+author = "THE-ANGEL-AI"
+name = "ComfyUI-LTX2-MultiGPU"
 Icon = ""
 requires-comfyui = ">=0.3.0"
 

@@ -74,13 +74,12 @@ class LTX2_MultiGPU_HybridSplitLoader:
     """
 
     NODE_ID = "LTX2_MultiGPU_HybridSplitLoader"
-    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
-    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
-    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    # Russian display name for users (grouped by CATEGORY).
+    # NODE_ID (technical class key) preserved for workflow_api compat.
     DISPLAY_NAME = "Разделитель модели (2 GPU)"
 
     FUNCTION = "load"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -170,13 +169,12 @@ class LTX2_MultiGPU_GemmaHybridLoader:
     """
 
     NODE_ID = "LTX2_MultiGPU_GemmaHybridLoader"
-    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
-    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
-    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    # Russian display name for users (grouped by CATEGORY).
+    # NODE_ID (technical class key) preserved for workflow_api compat.
     DISPLAY_NAME = "Загрузчик промптов (Gemma 3)"
 
     FUNCTION = "load"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("CLIP",)
@@ -249,13 +247,12 @@ class LTX2_MultiGPU_MemoryDiagnostics:
     """Pre-flight VRAM checker: dry-load прогон + nvidia-smi лог в консоль."""
 
     NODE_ID = "LTX2_MultiGPU_MemoryDiagnostics"
-    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
-    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
-    # so we don't repeat it here. NODE_ID (technical class key) preserved.
+    # Russian display name for users (grouped by CATEGORY).
+    # NODE_ID (technical class key) preserved for workflow_api compat.
     DISPLAY_NAME = "Диагностика видеопамяти"
 
     FUNCTION = "diagnose"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = True  # для ui={'report': [report]}
 
     RETURN_TYPES = ("STRING",)
@@ -327,13 +324,13 @@ class LTX2_MultiGPU_DeviceStrategy:
     """Переключатель глобальной стратегии распределения через mm."""
 
     NODE_ID = "LTX2_MultiGPU_DeviceStrategy"
-    # Russian display name for users (grouped by CATEGORY="LTX-2 MultiGPU").
+    # Russian display name for users (grouped by CATEGORY="THE-ANGEL-AI / LTX-2 MultiGPU").
     # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
     # so we don't repeat it here. NODE_ID (technical class key) preserved.
     DISPLAY_NAME = "Переключатель стратегии"
 
     FUNCTION = "apply_strategy"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -405,7 +402,7 @@ class LTX2_MultiGPU_VRAMParking:
     DISPLAY_NAME = "Парковка видеопамяти"
 
     FUNCTION = "apply"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -466,7 +463,7 @@ class LTX2_MultiGPU_SageAttention:
     DISPLAY_NAME = "Патч SageAttention (T4)"
 
     FUNCTION = "apply"
-    CATEGORY = "LTX-2 MultiGPU"
+    CATEGORY = "THE-ANGEL-AI / LTX-2 MultiGPU"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
