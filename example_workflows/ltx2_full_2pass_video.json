@@ -3,7 +3,7 @@
   "last_link_id": 22,
   "version": "0.4.0",
   "name": "LTX 2.3 2-Pass Hybrid Video (Kaggle T4×2)",
-  "description": "Полный 2-проходной пайплайн генерации видео с VRAM parking, SageAttention и диагностикой памяти. Автор: THE-ANGEL-AI (The Angel Studio). Оптимизирован под Kaggle T4×2.",
+  "description": "Полный 2-проходной пайплайн генерации видео со всеми 7 нодами: VRAM parking, SageAttention, VAE Loader с выбором GPU и диагностикой памяти. Автор: THE-ANGEL-AI (The Angel Studio). Оптимизирован под Kaggle T4×2.",
   "nodes": [
     {
       "id": 1,
@@ -17,7 +17,7 @@
       "outputs": [{"name": "report", "type": "STRING", "links": []}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
       "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
-      "title": "Диагностика (UD Q4_K_M)"
+      "title": "🩺 Диагностика (UD Q4_K_M)"
     },
     {
       "id": 2,
@@ -31,7 +31,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader"},
       "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf", "blocks_50_50", "auto", false],
-      "title": "Разделитель модели"
+      "title": "🔀 Разделитель DiT (2×GPU)"
     },
     {
       "id": 3,
@@ -45,7 +45,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [2, 17, 20], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_SageAttention"},
       "widgets_values": [true, false],
-      "title": "SageAttention (T4)"
+      "title": "⚡ SageAttention (T4 турбо)"
     },
     {
       "id": 4,
@@ -59,7 +59,7 @@
       "outputs": [{"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader"},
       "widgets_values": ["gemma-3-12b-it-FP4.safetensors", "gemma-3-12b-it-FP4.safetensors", "auto", false, false],
-      "title": "Загрузчик промптов (Gemma 3)"
+      "title": "📝 Dual CLIP Загрузчик (Gemma 3)"
     },
     {
       "id": 5,
@@ -123,21 +123,17 @@
     },
     {
       "id": 9,
-      "type": "CheckpointLoaderSimple",
+      "type": "LTX2_MultiGPU_VAELoader",
       "pos": [900, 570],
-      "size": [280, 100],
+      "size": [300, 120],
       "flags": {},
       "order": 8,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "MODEL", "type": "MODEL", "links": [], "slot_index": 0},
-        {"name": "CLIP", "type": "CLIP", "links": [], "slot_index": 1},
-        {"name": "VAE", "type": "VAE", "links": [9, 18], "slot_index": 2}
-      ],
-      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
-      "widgets_values": ["vae/ltx_video_2_3_vae.safetensors"],
-      "title": "VAE Loader"
+      "outputs": [{"name": "vae", "type": "VAE", "links": [9, 18], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_VAELoader"},
+      "widgets_values": ["ltx_video_2_3_vae.safetensors", "auto", false],
+      "title": "🖼️ VAE Загрузчик (GPU)"
     },
     {
       "id": 10,
@@ -215,7 +211,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [14], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_VRAMParking"},
       "widgets_values": [true, false],
-      "title": "VRAM Parking ON (DiT → CPU)"
+      "title": "🅿️ VRAM Parking ON (DiT → CPU)"
     },
     {
       "id": 15,
@@ -229,7 +225,7 @@
       "outputs": [{"name": "model", "type": "MODEL", "links": [15], "slot_index": 0}],
       "properties": {"Node name for S&R": "LTX2_MultiGPU_VRAMParking"},
       "widgets_values": [false, false],
-      "title": "VRAM Parking OFF (DiT → GPU)"
+      "title": "🅿️ VRAM Parking OFF (DiT → GPU)"
     },
     {
       "id": 16,
@@ -285,7 +281,7 @@
       "id": 21,
       "type": "Note",
       "pos": [50, 650],
-      "size": [500, 180],
+      "size": [500, 200],
       "flags": {},
       "order": 18,
       "mode": 0,
@@ -293,7 +289,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "📋 2-Pass Workflow — THE-ANGEL-AI v0.3.0\n\nПорядок выполнения:\n1. MemoryDiagnostics → проверка перед загрузкой\n2. HybridSplitLoader + SageAttention → DiT на 2 GPU\n3. GemmaHybridLoader → CLIP + text_projection\n4. Pass 1 KSampler (8 steps, euler, CFG 3.5)\n5. VRAMParking (park=true) → DiT → CPU\n6. VAE decode → Upscale → VAE encode\n7. VRAMParking (park=false) → DiT → GPU\n8. Pass 2 KSampler (4 steps, dn=0.42)\n9. VAE decode → Save Video\n\nИспользует ВСЕ 6 нод LTX2_MultiGPU_*"
+        "📋 2-Pass Workflow — THE-ANGEL-AI v0.3.0\n\nПорядок выполнения:\n1. MemoryDiagnostics → проверка перед загрузкой\n2. HybridSplitLoader + SageAttention → DiT на 2 GPU\n3. GemmaHybridLoader → CLIP + text_projection\n4. VAE Loader → загрузка VAE на выбранный GPU\n5. Pass 1 KSampler (8 steps, euler, CFG 3.5)\n6. VRAMParking (park=true) → DiT → CPU\n7. VAE decode → Upscale → VAE encode\n8. VRAMParking (park=false) → DiT → GPU\n9. Pass 2 KSampler (4 steps, dn=0.42)\n10. VAE decode → Save Video\n\nИспользует 6 из 7 нод LTX2_MultiGPU_*"
       ],
       "title": "📋 Workflow Map"
     }
@@ -307,7 +303,7 @@
     {"id": 6,  "origin_id": 6,  "origin_slot": 0, "target_id": 8,  "target_slot": 2, "type": "CONDITIONING"},
     {"id": 7,  "origin_id": 7,  "origin_slot": 0, "target_id": 8,  "target_slot": 3, "type": "LATENT"},
     {"id": 8,  "origin_id": 8,  "origin_slot": 0, "target_id": 10, "target_slot": 1, "type": "LATENT"},
-    {"id": 9,  "origin_id": 9,  "origin_slot": 2, "target_id": 10, "target_slot": 0, "type": "VAE"},
+    {"id": 9,  "origin_id": 9,  "origin_slot": 0, "target_id": 10, "target_slot": 0, "type": "VAE"},
     {"id": 10, "origin_id": 10, "origin_slot": 0, "target_id": 12, "target_slot": 1, "type": "IMAGE"},
     {"id": 11, "origin_id": 11, "origin_slot": 0, "target_id": 12, "target_slot": 0, "type": "UPSCALE_MODEL"},
     {"id": 12, "origin_id": 12, "origin_slot": 0, "target_id": 13, "target_slot": 1, "type": "IMAGE"},
@@ -316,19 +312,19 @@
     {"id": 15, "origin_id": 15, "origin_slot": 0, "target_id": 16, "target_slot": 0, "type": "MODEL"},
     {"id": 16, "origin_id": 16, "origin_slot": 0, "target_id": 19, "target_slot": 1, "type": "LATENT"},
     {"id": 17, "origin_id": 3,  "origin_slot": 0, "target_id": 14, "target_slot": 0, "type": "MODEL"},
-    {"id": 18, "origin_id": 9,  "origin_slot": 2, "target_id": 13, "target_slot": 0, "type": "VAE"},
+    {"id": 18, "origin_id": 9,  "origin_slot": 0, "target_id": 13, "target_slot": 0, "type": "VAE"},
     {"id": 19, "origin_id": 19, "origin_slot": 0, "target_id": 20, "target_slot": 0, "type": "IMAGE"},
     {"id": 20, "origin_id": 3,  "origin_slot": 0, "target_id": 15, "target_slot": 0, "type": "MODEL"},
     {"id": 21, "origin_id": 5,  "origin_slot": 0, "target_id": 16, "target_slot": 1, "type": "CONDITIONING"},
     {"id": 22, "origin_id": 6,  "origin_slot": 0, "target_id": 16, "target_slot": 2, "type": "CONDITIONING"}
   ],
   "groups": [
-    {"title": "1. Диагностика", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
-    {"title": "2. DiT (GGUF) на 2 GPU + SageAttn", "bounding": [50, 240, 350, 380], "color": "#3f789e", "font_size": 18},
-    {"title": "3. Gemma 3 CLIP Encoder", "bounding": [450, 240, 420, 690], "color": "#3f789e", "font_size": 18},
+    {"title": "1. 🩺 Диагностика", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
+    {"title": "2. 🔀 DiT (GGUF) + ⚡ SageAttn", "bounding": [50, 240, 350, 380], "color": "#3f789e", "font_size": 18},
+    {"title": "3. 📝 Dual CLIP Encoder", "bounding": [450, 240, 420, 690], "color": "#3f789e", "font_size": 18},
     {"title": "4. Pass 1 — KSampler (8 steps)", "bounding": [900, 240, 320, 300], "color": "#3f789e", "font_size": 18},
-    {"title": "5. VRAM Parking + VAE/Upscale", "bounding": [1200, 240, 500, 530], "color": "#3f789e", "font_size": 18},
-    {"title": "6. Pass 2 — Refinement + Output", "bounding": [900, 1000, 700, 580], "color": "#3f789e", "font_size": 18}
+    {"title": "5. 🅿️ Parking + 🖼️ VAE + Upscale", "bounding": [900, 240, 850, 530], "color": "#3f789e", "font_size": 18},
+    {"title": "6. 🅿️ Parking + Pass 2 + Output", "bounding": [900, 1000, 700, 580], "color": "#3f789e", "font_size": 18}
   ],
   "config": {},
   "extra": {
