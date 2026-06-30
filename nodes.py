@@ -91,14 +91,18 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        unet_opts: tuple = ("STRING", {"default": ""})
+        # FIX dropdown-bug: ВСЕГДА используем folder_paths.get_filename_list()
+        # если _FOLDER_PATHS_OK — даже при пустом списке ComfyUI рендерит
+        # выпадающий список (пустой dropdown ЛУЧШЕ чем bare text input).
+        # "(choices_tuple, )" = ComfyUI-формат для dropdown-виджета.
         if _FOLDER_PATHS_OK:
             try:
-                choices = folder_paths.get_filename_list("diffusion_models")  # type: ignore[union-attr]
-                if choices:
-                    unet_opts = (choices,)
+                unet_choices: list = folder_paths.get_filename_list("diffusion_models")  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                pass
+                unet_choices = []
+            unet_opts: tuple = (unet_choices,)
+        else:
+            unet_opts = ("STRING", {"default": ""})
         return {
             "required": {
                 "unet_name": unet_opts,
@@ -183,18 +187,28 @@ class LTX2_MultiGPU_GemmaHybridLoader:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        enc_opts: tuple = ("STRING", {"default": ""})
-        proj_opts: tuple = ("STRING", {"default": ""})
+        # FIX dropdown-bug: ВСЕГДА используем folder_paths.get_filename_list()
+        # если _FOLDER_PATHS_OK — даже при пустом списке ComfyUI рендерит
+        # выпадающий список (пустой dropdown ЛУЧШЕ чем bare text input).
+        # Gemma-файлы (.safetensors) могут лежать в text_encoders/ ИЛИ clip/ —
+        # объединяем обе папки для encoder и projection.
         if _FOLDER_PATHS_OK:
             try:
-                for folder in ("text_encoders", "clip"):
-                    items = folder_paths.get_filename_list(folder)  # type: ignore[union-attr]
-                    if items:
-                        enc_opts = (items,)
-                        proj_opts = (items,)
-                        break
+                enc_folder = folder_paths.get_filename_list("text_encoders")  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                pass
+                enc_folder = []
+            try:
+                clip_folder = folder_paths.get_filename_list("clip")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                clip_folder = []
+            # Оба виджета видят файлы из обеих папок (как старый код через
+            # ``for folder in (...): if items: break``, но БЕЗ guard'а).
+            merged: list = list(dict.fromkeys(enc_folder + clip_folder))  # dedup
+            enc_opts: tuple = (merged,)
+            proj_opts: tuple = (merged,)
+        else:
+            enc_opts = ("STRING", {"default": ""})
+            proj_opts = ("STRING", {"default": ""})
         return {
             "required": {
                 "clip_name1": enc_opts,
@@ -249,10 +263,32 @@ class LTX2_MultiGPU_MemoryDiagnostics:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
+        # FIX dropdown-bug: MemoryDiagnostics тоже должен показывать
+        # выпадающие списки файлов, а не голые текстовые поля.
+        # Gemma (.safetensors) может быть в text_encoders/ ИЛИ clip/.
+        if _FOLDER_PATHS_OK:
+            try:
+                unet_choices: list = folder_paths.get_filename_list("diffusion_models")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                unet_choices = []
+            try:
+                gemma_enc = folder_paths.get_filename_list("text_encoders")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                gemma_enc = []
+            try:
+                gemma_clip = folder_paths.get_filename_list("clip")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                gemma_clip = []
+            gemma_choices: list = list(dict.fromkeys(gemma_enc + gemma_clip))  # dedup
+            unet_opts: tuple = (unet_choices,)
+            gemma_opts: tuple = (gemma_choices,)
+        else:
+            unet_opts = ("STRING", {"default": ""})
+            gemma_opts = ("STRING", {"default": ""})
         return {
             "required": {
-                "unet_name": ("STRING", {"default": ""}),
-                "gemma_name": ("STRING", {"default": ""}),
+                "unet_name": unet_opts,
+                "gemma_name": gemma_opts,
                 "purge_cache": ("BOOLEAN", {"default": True}),
             }
         }
