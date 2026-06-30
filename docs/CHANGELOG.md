@@ -86,6 +86,28 @@
   GPL-3.0. Только код этого проекта под GPL-3.0-or-later. Перед коммерческим
   использованием генерации убедитесь в соблюдении license term чекпоинтов.
 
+### Documentation (структура папок)
+
+- **CHANGED**: переезд `SECURITY.md` / `CHANGELOG.md` / `CONTRIBUTING.md` из root в `docs/` (git mv с сохранением истории). `README.md` остаётся в root для GitHub landing-page visibility. Причина: чистая root-структура (только runtime metadata + код + .github/); `docs/` — расширяемая папка для future deep-docs (`ARCHITECTURE.md` / `DESIGN.md` / `API.md` / `TROUBLESHOOTING.md` — план).
+- **ADDED**: `docs/index.md` — 11-строчный навигатор docs/: title `# Documentation (docs/)` + intro-блок + 3 bullets с one-line описанием и markdown-links (`./CHANGELOG.md` / `./SECURITY.md` / `./CONTRIBUTING.md`) + back-link `[**README.md в корне**](../README.md) + GH community-health-file URL citation + GPL-3.0 footer.
+- **CHANGED**: cross-references в переехавших файлах обновлены под новые relative-path'ы: `docs/SECURITY.md` теперь ссылается на `./CHANGELOG.md` + `../LICENSE`; `docs/CONTRIBUTING.md` теперь ссылается на `./SECURITY.md` + `./CHANGELOG.md`; `docs/CHANGELOG.md`: wrong-prefix `submodule/.github/FUNDING.yml` → `.github/FUNDING.yml` (relic from superproject-era description, теперь относительный путь to submodule-root).
+- **CHANGED**: root `README.md` получил новую секцию `## Документы проекта` (между `## Лицензия...` и `## Хочется поковыряться`) с markdown-links на 3 файла в `docs/`.
+
+### Build (version sync package metadata)
+
+- **CHANGED**: `pyproject.toml [project] version = "0.1.0"` → `"0.2.0"`. С комментарием выше строки: `# 2026-06-30 — synchronized with CHANGELOG.md v0.2.0 (SoloAngel/SP-release)`. Effect: `pip install --upgrade` теперь правильно детектит новую версию — раньше возвращал 'requirement already satisfied' из-за несинхронного metadata mismatch (pyproject был 0.1.0 а HEAD-коммит уже содержал CHANGELOG v0.2.0).
+- **CHANGED**: `__init__.py module-level __version__ = "0.1.0"` → `"0.2.0"`. С комментарием `# VERSION синхронизирован с pyproject.toml (release v0.2.0, 2026-06-30)`. Runtime-variable, синхронизируется по manual-rule с pyproject.toml.
+- **CHANGED**: root `README.md` version-badge URL: `version-0.1.0-green.svg` → `version-0.2.0-green.svg`. Visible visual cue for users browsing repo root.
+
+### CI
+
+- **ADDED** (`278f2ba`): `.github/workflows/ci.yml` (Smoke CI). Triggers: `push: branches: [main]`, `pull_request: branches: [main]`, `workflow_dispatch` (manual). Matrix: Python 3.10 / 3.11 / 3.12, `fail-fast: false` (один упавший Python не отменяет остальные). Steps: `actions/checkout@v4` + `actions/setup-python@v5` (с `cache: 'pip'` + `cache-dependency-path: requirements.txt,pyproject.toml`) + `pip install CPU-only torch (~200 МБ) + pip install -r requirements.txt` + `py_compile __init__.py nodes.py core/gguf_split.py core/gguf_reader.py core/memory_tracker.py` + `import-check` через `python -c "import sys; sys.path.insert(0, '.'); import nodes; print('OK')"`. Concurrency group `ci-smoke-${{ github.ref }}` + `cancel-in-progress: true` (экономит CI-minutes на force-push в PR'е). Permissions: `contents: read` (минимум).
+- **Effect**: ImportError regressions теперь ловятся ДО merge в `main`. Раньше регрессия в `apply_strategy` или silent `import torch` failure проходила review без визуального smoke-test и обнаруживалась только через community issue-report.
+
+### Fixed (audit trail)
+
+- **FIXED** (`3fbf84b`, `74f08e54`): pre-existing typo `nnodes.py` → `nodes.py` в `docs/SECURITY.md` "Out of Scope" bullet. Источник: code-review pass во время docs-restructure (`74f08e54`). Также удалён redundant phrase "см. README «Советы и грабли» +" — ссылка на root README была prose-only описательная, новая формулировка стала точнее: `\`nodes.py\` § \`verbose_log\``.
+
 ---
 
 ## [v0.1.0] — 2026-06-29
