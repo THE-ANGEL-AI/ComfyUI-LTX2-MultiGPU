@@ -1,9 +1,9 @@
 {
-  "last_node_id": 10,
-  "last_link_id": 12,
+  "last_node_id": 9,
+  "last_link_id": 4,
   "version": "0.4.0",
-  "name": "LTX 2.3 Diagnostics-First Workflow",
-  "description": "Запустите этот workflow ПЕРВЫМ чтобы проверить поместится ли выбранный GGUF quant на ваших GPU. Не загружает модель — только читает GGUF header.",
+  "name": "LTX 2.3 Diagnostics-First (4 Quant Types)",
+  "description": "Запустите ПЕРВЫМ — проверяет поместится ли GGUF quant на ваших GPU. НЕ загружает модель, только читает GGUF header. Автор: THE-ANGEL-AI (The Angel Studio).",
   "nodes": [
     {
       "id": 1,
@@ -14,19 +14,10 @@
       "order": 0,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": [1], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ],
-      "title": "Memory Diagnostics — UD Q4_K_M"
+      "outputs": [{"name": "report", "type": "STRING", "links": [1], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "UD Q4_K_M — Recommended"
     },
     {
       "id": 2,
@@ -37,19 +28,10 @@
       "order": 1,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": [2], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ],
-      "title": "Memory Diagnostics — UD Q5_K_M"
+      "outputs": [{"name": "report", "type": "STRING", "links": [2], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "UD Q5_K_M — Quality"
     },
     {
       "id": 3,
@@ -60,19 +42,10 @@
       "order": 2,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": [3], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q3_K_XL.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ],
-      "title": "Memory Diagnostics — UD Q3_K_XL (1xT4 fallback)"
+      "outputs": [{"name": "report", "type": "STRING", "links": [3], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q3_K_XL.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "UD Q3_K_XL — 1×T4 Fallback"
     },
     {
       "id": 4,
@@ -83,97 +56,72 @@
       "order": 3,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": [4], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q6_K.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ],
-      "title": "Memory Diagnostics — UD Q6_K (вероятный OOM)"
+      "outputs": [{"name": "report", "type": "STRING", "links": [4], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q6_K.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "UD Q6_K — Likely OOM"
     },
     {
       "id": 5,
       "type": "PreviewText",
       "pos": [550, 50],
-      "size": [500, 300],
+      "size": [520, 180],
       "flags": {},
       "order": 4,
       "mode": 0,
-      "inputs": [
-        {"name": "text", "type": "STRING", "link": 1}
-      ],
+      "inputs": [{"name": "text", "type": "STRING", "link": 1}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewText"
-      },
+      "properties": {"Node name for S&R": "PreviewText"},
       "widgets_values": [],
       "title": "Q4_K_M Report"
     },
     {
       "id": 6,
       "type": "PreviewText",
-      "pos": [550, 380],
-      "size": [500, 300],
+      "pos": [550, 260],
+      "size": [520, 180],
       "flags": {},
       "order": 5,
       "mode": 0,
-      "inputs": [
-        {"name": "text", "type": "STRING", "link": 2}
-      ],
+      "inputs": [{"name": "text", "type": "STRING", "link": 2}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewText"
-      },
+      "properties": {"Node name for S&R": "PreviewText"},
       "widgets_values": [],
       "title": "Q5_K_M Report"
     },
     {
       "id": 7,
       "type": "PreviewText",
-      "pos": [550, 710],
-      "size": [500, 300],
+      "pos": [550, 470],
+      "size": [520, 180],
       "flags": {},
       "order": 6,
       "mode": 0,
-      "inputs": [
-        {"name": "text", "type": "STRING", "link": 3}
-      ],
+      "inputs": [{"name": "text", "type": "STRING", "link": 3}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewText"
-      },
+      "properties": {"Node name for S&R": "PreviewText"},
       "widgets_values": [],
       "title": "Q3_K_XL Report"
     },
     {
       "id": 8,
       "type": "PreviewText",
-      "pos": [550, 1040],
-      "size": [500, 300],
+      "pos": [550, 680],
+      "size": [520, 180],
       "flags": {},
       "order": 7,
       "mode": 0,
-      "inputs": [
-        {"name": "text", "type": "STRING", "link": 4}
-      ],
+      "inputs": [{"name": "text", "type": "STRING", "link": 4}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "PreviewText"
-      },
+      "properties": {"Node name for S&R": "PreviewText"},
       "widgets_values": [],
-      "title": "Q6_K Report (OOM?)"
+      "title": "Q6_K Report"
     },
     {
       "id": 9,
       "type": "Note",
       "pos": [50, 850],
-      "size": [500, 220],
+      "size": [480, 260],
       "flags": {},
       "order": 8,
       "mode": 0,
@@ -181,7 +129,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "📊 Diagnostics-First Workflow\n\nЗапустите ЭТОТ workflow ПЕРВЫМ перед генерацией.\n\nЧто он делает:\n• Читает GGUF header (без загрузки модели!)\n• Считает реальный quant-размер (не fp16 × 2!)\n• Проецирует VRAM/RAM бюджет для каждой стратегии\n• Показывает: ✅ OK, ⚠️ Tight, ❌ OOM\n• Авто-предлагает лучшую стратегию\n\n📋 Все 4 quant-типа проверяются параллельно:\n• Q4_K_M → обычно Recommended на T4×2\n• Q5_K_M → качество, но tight на T4\n• Q3_K_XL → 1xT4 fallback\n• Q6_K → OOM warning\n\nВыберите quant по отчёту — и загружайте через HybridSplitLoader!"
+        "📊 Diagnostics-First — THE-ANGEL-AI v0.3.0\n\nЗапустите ЭТОТ workflow ПЕРВЫМ.\n\nЧто он делает:\n• Читает GGUF header (без загрузки модели!)\n• Считает реальный quant-размер (не fp16×2!)\n• Проецирует VRAM/RAM бюджет для всех стратегий\n• Показывает: ✅ OK / ⚠️ Tight / ❌ OOM\n• Авто-выбирает лучшую стратегию\n\n📋 4 quant-типа параллельно:\n• UD-Q4_K_M → Recommended (12 GB VRAM)\n• UD-Q5_K_M → Quality, tight (14 GB VRAM)\n• UD-Q3_K_XL → 1×T4 fallback (10 GB VRAM)\n• UD-Q6_K → OOM warning (17 GB VRAM)\n\nВыберите quant по отчёту → загружайте HybridSplitLoader!"
       ],
       "title": "📋 Diagnostics Instructions"
     }
@@ -193,15 +141,16 @@
     {"id": 4, "origin_id": 4, "origin_slot": 0, "target_id": 8, "target_slot": 0, "type": "STRING"}
   ],
   "groups": [
-    {"title": "Diagnostics — All 4 quant types", "bounding": [50, 50, 440, 770], "color": "#3f789e", "font_size": 18},
-    {"title": "Reports (PreviewText)", "bounding": [550, 50, 520, 1300], "color": "#3f789e", "font_size": 18}
+    {"title": "MemoryDiagnostics ×4 — Все quant-типы", "bounding": [50, 50, 440, 770], "color": "#3f789e", "font_size": 18},
+    {"title": "Отчёты (PreviewText)", "bounding": [550, 50, 520, 830], "color": "#3f789e", "font_size": 18}
   ],
   "config": {},
   "extra": {
+    "author": "THE-ANGEL-AI (The Angel Studio)",
+    "repo": "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU",
+    "version": "0.3.0-pre",
     "comfyui_version": "0.4.0+",
-    "required_custom_nodes": [
-      "ComfyUI-LTX2-MultiGPU"
-    ],
+    "required_custom_nodes": ["ComfyUI-LTX2-MultiGPU"],
     "target_hardware": "Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM)",
     "note": "НЕ загружает модель — только читает GGUF header. Безопасно при любом quant."
   },

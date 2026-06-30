@@ -1,31 +1,23 @@
 {
   "last_node_id": 22,
-  "last_link_id": 28,
+  "last_link_id": 22,
   "version": "0.4.0",
   "name": "LTX 2.3 2-Pass Hybrid Video (Kaggle T4×2)",
-  "description": "Полный 2-проходной пайплайн генерации видео с VRAM parking, SageAttention и диагностикой памяти. Оптимизирован под Kaggle T4×2.",
+  "description": "Полный 2-проходной пайплайн генерации видео с VRAM parking, SageAttention и диагностикой памяти. Автор: THE-ANGEL-AI (The Angel Studio). Оптимизирован под Kaggle T4×2.",
   "nodes": [
     {
       "id": 1,
       "type": "LTX2_MultiGPU_MemoryDiagnostics",
       "pos": [50, 50],
-      "size": [340, 120],
+      "size": [380, 130],
       "flags": {},
       "order": 0,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": []}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ]
+      "outputs": [{"name": "report", "type": "STRING", "links": []}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "Диагностика (UD Q4_K_M)"
     },
     {
       "id": 2,
@@ -36,19 +28,10 @@
       "order": 1,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf",
-        "blocks_50_50",
-        "auto",
-        false
-      ]
+      "outputs": [{"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf", "blocks_50_50", "auto", false],
+      "title": "Разделитель модели"
     },
     {
       "id": 3,
@@ -58,20 +41,11 @@
       "flags": {},
       "order": 2,
       "mode": 0,
-      "inputs": [
-        {"name": "model", "type": "MODEL", "link": 1}
-      ],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [2, 17, 20], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_SageAttention",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        true,
-        false
-      ]
+      "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [2, 17, 20], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_SageAttention"},
+      "widgets_values": [true, false],
+      "title": "SageAttention (T4)"
     },
     {
       "id": 4,
@@ -82,64 +56,38 @@
       "order": 3,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "gemma-3-12b-it-FP4.safetensors",
-        "gemma-3-12b-it-FP4.safetensors",
-        "auto",
-        false,
-        false
-      ]
+      "outputs": [{"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader"},
+      "widgets_values": ["gemma-3-12b-it-FP4.safetensors", "gemma-3-12b-it-FP4.safetensors", "auto", false, false],
+      "title": "Загрузчик промптов (Gemma 3)"
     },
     {
       "id": 5,
       "type": "CLIPTextEncode",
       "pos": [450, 490],
-      "size": [400, 200],
+      "size": [400, 180],
       "flags": {},
       "order": 4,
       "mode": 0,
-      "inputs": [
-        {"name": "clip", "type": "CLIP", "link": 3}
-      ],
-      "outputs": [
-        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "A serene mountain lake at golden hour, cinematic quality, smooth camera pan, 4K, photorealistic"
-      ],
-      "title": "Positive Prompt (Pass 1)"
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 3}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [5, 21], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["A serene mountain lake at golden hour, cinematic quality, smooth camera pan, 4K, photorealistic — LTX 2.3 2-pass"],
+      "title": "Positive Prompt"
     },
     {
       "id": 6,
       "type": "CLIPTextEncode",
-      "pos": [450, 740],
-      "size": [400, 200],
+      "pos": [450, 720],
+      "size": [400, 180],
       "flags": {},
       "order": 5,
       "mode": 0,
-      "inputs": [
-        {"name": "clip", "type": "CLIP", "link": 4}
-      ],
-      "outputs": [
-        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [6], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "blurry, low quality, distorted, watermark, text, jpeg artifacts"
-      ],
-      "title": "Negative Prompt (Pass 1)"
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 4}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [6, 22], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["blurry, low quality, distorted, watermark, text, jpeg artifacts, oversaturated"],
+      "title": "Negative Prompt"
     },
     {
       "id": 7,
@@ -150,17 +98,9 @@
       "order": 6,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [7], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "EmptyLatentImage"
-      },
-      "widgets_values": [
-        768,
-        512,
-        1
-      ]
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [7], "slot_index": 0}],
+      "properties": {"Node name for S&R": "EmptyLatentImage"},
+      "widgets_values": [768, 512, 1]
     },
     {
       "id": 8,
@@ -176,22 +116,10 @@
         {"name": "negative", "type": "CONDITIONING", "link": 6},
         {"name": "latent_image", "type": "LATENT", "link": 7}
       ],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [8], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "KSampler"
-      },
-      "widgets_values": [
-        987654321,
-        true,
-        8,
-        3.5,
-        "euler",
-        "normal",
-        0.0
-      ],
-      "title": "KSampler — Pass 1 (denoising)"
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [8], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [987654321, true, 8, 3.5, "euler", "normal", 0.0],
+      "title": "KSampler — Pass 1"
     },
     {
       "id": 9,
@@ -207,12 +135,8 @@
         {"name": "CLIP", "type": "CLIP", "links": [], "slot_index": 1},
         {"name": "VAE", "type": "VAE", "links": [9, 18], "slot_index": 2}
       ],
-      "properties": {
-        "Node name for S&R": "CheckpointLoaderSimple"
-      },
-      "widgets_values": [
-        "vae/ltx_video_2_3_vae.safetensors"
-      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["vae/ltx_video_2_3_vae.safetensors"],
       "title": "VAE Loader"
     },
     {
@@ -227,14 +151,10 @@
         {"name": "vae", "type": "VAE", "link": 9},
         {"name": "samples", "type": "LATENT", "link": 8}
       ],
-      "outputs": [
-        {"name": "IMAGE", "type": "IMAGE", "links": [10], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "VAEDecode"
-      },
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [10], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
       "widgets_values": [],
-      "title": "VAE Decode (Pass 1 → Images)"
+      "title": "VAE Decode (Pass 1)"
     },
     {
       "id": 11,
@@ -245,16 +165,10 @@
       "order": 10,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "UPSCALE_MODEL", "type": "UPSCALE_MODEL", "links": [11], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "UpscaleModelLoader"
-      },
-      "widgets_values": [
-        "4x-UltraSharp.pth"
-      ],
-      "title": "Upscaler Loader"
+      "outputs": [{"name": "UPSCALE_MODEL", "type": "UPSCALE_MODEL", "links": [11], "slot_index": 0}],
+      "properties": {"Node name for S&R": "UpscaleModelLoader"},
+      "widgets_values": ["4x-UltraSharp.pth"],
+      "title": "Upscale Model Loader"
     },
     {
       "id": 12,
@@ -268,12 +182,8 @@
         {"name": "upscale_model", "type": "UPSCALE_MODEL", "link": 11},
         {"name": "image", "type": "IMAGE", "link": 10}
       ],
-      "outputs": [
-        {"name": "IMAGE", "type": "IMAGE", "links": [12], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "ImageUpscaleWithModel"
-      },
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [12], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ImageUpscaleWithModel"},
       "widgets_values": []
     },
     {
@@ -288,13 +198,10 @@
         {"name": "vae", "type": "VAE", "link": 18},
         {"name": "pixels", "type": "IMAGE", "link": 12}
       ],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [13], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "VAEEncode"
-      },
-      "widgets_values": []
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [13], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEEncode"},
+      "widgets_values": [],
+      "title": "VAE Encode (upscaled)"
     },
     {
       "id": 14,
@@ -304,21 +211,11 @@
       "flags": {},
       "order": 13,
       "mode": 0,
-      "inputs": [
-        {"name": "model", "type": "MODEL", "link": 17}
-      ],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [14], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_VRAMParking",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        true,
-        false
-      ],
-      "title": "VRAM Parking (освободить для VAE)"
+      "inputs": [{"name": "model", "type": "MODEL", "link": 17}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [14], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_VRAMParking"},
+      "widgets_values": [true, false],
+      "title": "VRAM Parking ON (DiT → CPU)"
     },
     {
       "id": 15,
@@ -328,21 +225,11 @@
       "flags": {},
       "order": 14,
       "mode": 0,
-      "inputs": [
-        {"name": "model", "type": "MODEL", "link": 14}
-      ],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [15], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_VRAMParking",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        false,
-        false
-      ],
-      "title": "VRAM Park Off (вернуть DiT на GPU)"
+      "inputs": [{"name": "model", "type": "MODEL", "link": 14}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [15], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_VRAMParking"},
+      "widgets_values": [false, false],
+      "title": "VRAM Parking OFF (DiT → GPU)"
     },
     {
       "id": 16,
@@ -354,26 +241,14 @@
       "mode": 0,
       "inputs": [
         {"name": "model", "type": "MODEL", "link": 15},
-        {"name": "positive", "type": "CONDITIONING", "link": 5},
-        {"name": "negative", "type": "CONDITIONING", "link": 6},
+        {"name": "positive", "type": "CONDITIONING", "link": 21},
+        {"name": "negative", "type": "CONDITIONING", "link": 22},
         {"name": "latent_image", "type": "LATENT", "link": 13}
       ],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [16], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "KSampler"
-      },
-      "widgets_values": [
-        1234567890,
-        true,
-        4,
-        2.0,
-        "euler",
-        "normal",
-        0.42
-      ],
-      "title": "KSampler — Pass 2 (refinement, low denoise)"
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [16], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [1234567890, true, 4, 2.0, "euler", "normal", 0.42],
+      "title": "KSampler — Pass 2 (refine)"
     },
     {
       "id": 19,
@@ -387,14 +262,10 @@
         {"name": "vae", "type": "VAE", "link": 9},
         {"name": "samples", "type": "LATENT", "link": 16}
       ],
-      "outputs": [
-        {"name": "IMAGE", "type": "IMAGE", "links": [19], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "VAEDecode"
-      },
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [19], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
       "widgets_values": [],
-      "title": "VAE Decode (Pass 2 → Final)"
+      "title": "VAE Decode (Final)"
     },
     {
       "id": 20,
@@ -404,33 +275,17 @@
       "flags": {},
       "order": 17,
       "mode": 0,
-      "inputs": [
-        {"name": "images", "type": "IMAGE", "link": 19}
-      ],
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 19}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "VHS_VideoCombine"
-      },
-      "widgets_values": [
-        24,
-        0,
-        true,
-        "output/video",
-        "h264",
-        3,
-        null,
-        "None",
-        "None",
-        false,
-        false
-      ],
+      "properties": {"Node name for S&R": "VHS_VideoCombine"},
+      "widgets_values": [24, 0, true, "output/video", "h264", 3, null, "None", "None", false, false],
       "title": "Save Video"
     },
     {
       "id": 21,
       "type": "Note",
       "pos": [50, 650],
-      "size": [500, 120],
+      "size": [500, 180],
       "flags": {},
       "order": 18,
       "mode": 0,
@@ -438,9 +293,9 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "⚠️ ВАЖНО: Порядок выполнения!\n\n1. MemoryDiagnostics → проверка перед загрузкой\n2. HybridSplitLoader + SageAttention → модель на 2 GPU\n3. Pass 1 KSampler → генерация\n4. VRAMParking (park=true) → DiT на CPU, освободить VRAM\n5. VAE decode → upscale → VAE encode\n6. VRAMParking (park=false) → вернуть DiT на GPU\n7. Pass 2 KSampler → refinement\n8. VAE decode → Save Video"
+        "📋 2-Pass Workflow — THE-ANGEL-AI v0.3.0\n\nПорядок выполнения:\n1. MemoryDiagnostics → проверка перед загрузкой\n2. HybridSplitLoader + SageAttention → DiT на 2 GPU\n3. GemmaHybridLoader → CLIP + text_projection\n4. Pass 1 KSampler (8 steps, euler, CFG 3.5)\n5. VRAMParking (park=true) → DiT → CPU\n6. VAE decode → Upscale → VAE encode\n7. VRAMParking (park=false) → DiT → GPU\n8. Pass 2 KSampler (4 steps, dn=0.42)\n9. VAE decode → Save Video\n\nИспользует ВСЕ 6 нод LTX2_MultiGPU_*"
       ],
-      "title": "📋 2-Pass Workflow Instructions"
+      "title": "📋 Workflow Map"
     }
   ],
   "links": [
@@ -457,8 +312,9 @@
     {"id": 11, "origin_id": 11, "origin_slot": 0, "target_id": 12, "target_slot": 0, "type": "UPSCALE_MODEL"},
     {"id": 12, "origin_id": 12, "origin_slot": 0, "target_id": 13, "target_slot": 1, "type": "IMAGE"},
     {"id": 13, "origin_id": 13, "origin_slot": 0, "target_id": 16, "target_slot": 3, "type": "LATENT"},
-    {"id": 14, "origin_id": 15, "origin_slot": 0, "target_id": 16, "target_slot": 0, "type": "MODEL"},
-    {"id": 15, "origin_id": 8,  "origin_slot": 0, "target_id": null, "target_slot": -1, "type": "LATENT"},
+    {"id": 14, "origin_id": 14, "origin_slot": 0, "target_id": 15, "target_slot": 0, "type": "MODEL"},
+    {"id": 15, "origin_id": 15, "origin_slot": 0, "target_id": 16, "target_slot": 0, "type": "MODEL"},
+    {"id": 16, "origin_id": 16, "origin_slot": 0, "target_id": 19, "target_slot": 1, "type": "LATENT"},
     {"id": 17, "origin_id": 3,  "origin_slot": 0, "target_id": 14, "target_slot": 0, "type": "MODEL"},
     {"id": 18, "origin_id": 9,  "origin_slot": 2, "target_id": 13, "target_slot": 0, "type": "VAE"},
     {"id": 19, "origin_id": 19, "origin_slot": 0, "target_id": 20, "target_slot": 0, "type": "IMAGE"},
@@ -467,22 +323,20 @@
     {"id": 22, "origin_id": 6,  "origin_slot": 0, "target_id": 16, "target_slot": 2, "type": "CONDITIONING"}
   ],
   "groups": [
-    {"title": "1. Pre-flight диагностика", "bounding": [50, 50, 350, 150], "color": "#3f789e", "font_size": 18},
-    {"title": "2. Загрузка LTX 2.3 DiT (GGUF) на 2 GPU", "bounding": [50, 240, 350, 380], "color": "#3f789e", "font_size": 18},
-    {"title": "3. Gemma 3 12B Encoder (текст)", "bounding": [450, 240, 420, 730], "color": "#3f789e", "font_size": 18},
-    {"title": "4. Pass 1 — Генерация (8 steps)", "bounding": [900, 240, 320, 300], "color": "#3f789e", "font_size": 18},
-    {"title": "5. VRAM Parking для VAE/Upscale", "bounding": [1200, 240, 500, 520], "color": "#3f789e", "font_size": 18},
-    {"title": "6. Pass 2 — Refinement (4 steps, dn=0.42)", "bounding": [900, 1000, 700, 540], "color": "#3f789e", "font_size": 18}
+    {"title": "1. Диагностика", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
+    {"title": "2. DiT (GGUF) на 2 GPU + SageAttn", "bounding": [50, 240, 350, 380], "color": "#3f789e", "font_size": 18},
+    {"title": "3. Gemma 3 CLIP Encoder", "bounding": [450, 240, 420, 690], "color": "#3f789e", "font_size": 18},
+    {"title": "4. Pass 1 — KSampler (8 steps)", "bounding": [900, 240, 320, 300], "color": "#3f789e", "font_size": 18},
+    {"title": "5. VRAM Parking + VAE/Upscale", "bounding": [1200, 240, 500, 530], "color": "#3f789e", "font_size": 18},
+    {"title": "6. Pass 2 — Refinement + Output", "bounding": [900, 1000, 700, 580], "color": "#3f789e", "font_size": 18}
   ],
   "config": {},
   "extra": {
+    "author": "THE-ANGEL-AI (The Angel Studio)",
+    "repo": "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU",
+    "version": "0.3.0-pre",
     "comfyui_version": "0.4.0+",
-    "required_custom_nodes": [
-      "ComfyUI-LTX2-MultiGPU",
-      "ComfyUI-GGUF",
-      "ComfyUI-VideoHelperSuite",
-      "ComfyUI-UpscaleModels"
-    ],
+    "required_custom_nodes": ["ComfyUI-LTX2-MultiGPU", "ComfyUI-GGUF", "ComfyUI-VideoHelperSuite"],
     "target_hardware": "Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM)",
     "estimated_time": "45-65 sec (с SageAttention) | 60-85 sec (без)",
     "recommended_quant": "UD-Q4_K_M (14 GB GGUF)"

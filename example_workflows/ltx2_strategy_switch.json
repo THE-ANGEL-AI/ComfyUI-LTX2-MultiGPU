@@ -1,32 +1,23 @@
 {
-  "last_node_id": 12,
-  "last_link_id": 14,
+  "last_node_id": 13,
+  "last_link_id": 11,
   "version": "0.4.0",
   "name": "LTX 2.3 Strategy Hot-Switch Demo",
-  "description": "Демонстрация горячего переключения стратегий распределения без перезагрузки модели — DeviceStrategy + MemoryDiagnostics.",
+  "description": "Демонстрация горячего переключения стратегий blocks_50_50→blocks_30_70 без перезагрузки модели. Автор: THE-ANGEL-AI (The Angel Studio).",
   "nodes": [
     {
       "id": 1,
       "type": "LTX2_MultiGPU_MemoryDiagnostics",
       "pos": [50, 50],
-      "size": [340, 120],
+      "size": [380, 130],
       "flags": {},
       "order": 0,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "report", "type": "STRING", "links": []}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf",
-        "gemma-3-12b-it-FP4.safetensors",
-        true
-      ],
-      "title": "Диагностика (авто-выбор стратегии)"
+      "outputs": [{"name": "report", "type": "STRING", "links": []}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf", "gemma-3-12b-it-FP4.safetensors", true],
+      "title": "Диагностика (Q5_K_M → авто-выбор)"
     },
     {
       "id": 2,
@@ -37,19 +28,10 @@
       "order": 1,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf",
-        "blocks_50_50",
-        "auto",
-        false
-      ]
+      "outputs": [{"name": "model", "type": "MODEL", "links": [1], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_HybridSplitLoader"},
+      "widgets_values": ["ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf", "blocks_50_50", "auto", false],
+      "title": "Загрузка как blocks_50_50"
     },
     {
       "id": 3,
@@ -59,22 +41,11 @@
       "flags": {},
       "order": 2,
       "mode": 0,
-      "inputs": [
-        {"name": "model", "type": "MODEL", "link": 1}
-      ],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [2], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_DeviceStrategy",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "blocks_30_70",
-        "auto",
-        false
-      ],
-      "title": "Strategy Switch: blocks_50_50 → blocks_30_70"
+      "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [2], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_DeviceStrategy"},
+      "widgets_values": ["blocks_30_70", "auto", false],
+      "title": "🔥 Hot-Switch: 50/50 → 30/70"
     },
     {
       "id": 4,
@@ -85,62 +56,38 @@
       "order": 3,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        "gemma-3-12b-it-FP4.safetensors",
-        "gemma-3-12b-it-FP4.safetensors",
-        "cuda:1",
-        false,
-        false
-      ]
+      "outputs": [{"name": "clip", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_GemmaHybridLoader"},
+      "widgets_values": ["gemma-3-12b-it-FP4.safetensors", "gemma-3-12b-it-FP4.safetensors", "cuda:1", false, false],
+      "title": "Gemma Encoder (cuda:1)"
     },
     {
       "id": 5,
       "type": "CLIPTextEncode",
       "pos": [450, 490],
-      "size": [400, 200],
+      "size": [400, 180],
       "flags": {},
       "order": 4,
       "mode": 0,
-      "inputs": [
-        {"name": "clip", "type": "CLIP", "link": 3}
-      ],
-      "outputs": [
-        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "Epic drone shot over a futuristic city at night, neon lights, rain, cinematic, 4K"
-      ]
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 3}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["Epic drone shot over a futuristic city at night, neon lights, rain, cinematic, 4K"],
+      "title": "Positive Prompt"
     },
     {
       "id": 6,
       "type": "CLIPTextEncode",
-      "pos": [450, 740],
-      "size": [400, 200],
+      "pos": [450, 720],
+      "size": [400, 180],
       "flags": {},
       "order": 5,
       "mode": 0,
-      "inputs": [
-        {"name": "clip", "type": "CLIP", "link": 4}
-      ],
-      "outputs": [
-        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [6], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "blurry, low quality, distorted, watermark, text, day time, sunny"
-      ]
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 4}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [6], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["blurry, low quality, distorted, watermark, text, day time, sunny"],
+      "title": "Negative Prompt"
     },
     {
       "id": 7,
@@ -151,17 +98,9 @@
       "order": 6,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [7], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "EmptyLatentImage"
-      },
-      "widgets_values": [
-        768,
-        512,
-        1
-      ]
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [7], "slot_index": 0}],
+      "properties": {"Node name for S&R": "EmptyLatentImage"},
+      "widgets_values": [768, 512, 1]
     },
     {
       "id": 8,
@@ -171,20 +110,11 @@
       "flags": {},
       "order": 7,
       "mode": 0,
-      "inputs": [
-        {"name": "model", "type": "MODEL", "link": 2}
-      ],
-      "outputs": [
-        {"name": "model", "type": "MODEL", "links": [8], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "LTX2_MultiGPU_SageAttention",
-        "cnr_id": "comfyui-ltx2-multigpu"
-      },
-      "widgets_values": [
-        true,
-        false
-      ]
+      "inputs": [{"name": "model", "type": "MODEL", "link": 2}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [8], "slot_index": 0}],
+      "properties": {"Node name for S&R": "LTX2_MultiGPU_SageAttention"},
+      "widgets_values": [true, false],
+      "title": "SageAttention (T4)"
     },
     {
       "id": 9,
@@ -200,22 +130,10 @@
         {"name": "negative", "type": "CONDITIONING", "link": 6},
         {"name": "latent_image", "type": "LATENT", "link": 7}
       ],
-      "outputs": [
-        {"name": "LATENT", "type": "LATENT", "links": [9], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "KSampler"
-      },
-      "widgets_values": [
-        987654321,
-        true,
-        8,
-        3.5,
-        "euler",
-        "normal",
-        0.0
-      ],
-      "title": "KSampler (блоки 30/70 на 2 GPU)"
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [9], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [987654321, true, 8, 3.5, "euler", "normal", 0.0],
+      "title": "KSampler (30/70 split)"
     },
     {
       "id": 10,
@@ -231,12 +149,8 @@
         {"name": "CLIP", "type": "CLIP", "links": [], "slot_index": 1},
         {"name": "VAE", "type": "VAE", "links": [10], "slot_index": 2}
       ],
-      "properties": {
-        "Node name for S&R": "CheckpointLoaderSimple"
-      },
-      "widgets_values": [
-        "vae/ltx_video_2_3_vae.safetensors"
-      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["vae/ltx_video_2_3_vae.safetensors"],
       "title": "VAE Loader"
     },
     {
@@ -251,12 +165,8 @@
         {"name": "vae", "type": "VAE", "link": 10},
         {"name": "samples", "type": "LATENT", "link": 9}
       ],
-      "outputs": [
-        {"name": "IMAGE", "type": "IMAGE", "links": [11], "slot_index": 0}
-      ],
-      "properties": {
-        "Node name for S&R": "VAEDecode"
-      },
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [11], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
       "widgets_values": []
     },
     {
@@ -267,33 +177,17 @@
       "flags": {},
       "order": 11,
       "mode": 0,
-      "inputs": [
-        {"name": "images", "type": "IMAGE", "link": 11}
-      ],
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 11}],
       "outputs": [],
-      "properties": {
-        "Node name for S&R": "VHS_VideoCombine"
-      },
-      "widgets_values": [
-        24,
-        0,
-        true,
-        "output/video",
-        "h264",
-        3,
-        null,
-        "None",
-        "None",
-        false,
-        false
-      ],
+      "properties": {"Node name for S&R": "VHS_VideoCombine"},
+      "widgets_values": [24, 0, true, "output/video", "h264", 3, null, "None", "None", false, false],
       "title": "Save Video"
     },
     {
       "id": 13,
       "type": "Note",
       "pos": [50, 680],
-      "size": [500, 160],
+      "size": [500, 180],
       "flags": {},
       "order": 12,
       "mode": 0,
@@ -301,39 +195,38 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "🔀 Strategy Hot-Switch Demo\n\nЭтот workflow показывает горячее переключение стратегий:\n- HybridSplitLoader загружает как blocks_50_50\n- DeviceStrategy переключает на blocks_30_70 БЕЗ перезагрузки!\n\nКогда использовать:\n• UD-Q5_K_M (18 GB) → авто-выбор blocks_30_70 на T4\n• UD-Q4_K_M (14 GB) → blocks_50_50 для скорости\n• VAE + upscale нужны → временно blocks_30_70\n\nГорячее переключение ~1.5 сек (per-block move)."
+        "🔀 Strategy Hot-Switch — THE-ANGEL-AI v0.3.0\n\nДемо горячего переключения стратегий:\n• Загрузка как blocks_50_50\n• DeviceStrategy → blocks_30_70 БЕЗ перезагрузки!\n\nИспользуемые ноды:\n• MemoryDiagnostics (авто-выбор стратегии)\n• HybridSplitLoader (загрузка GGUF)\n• DeviceStrategy (hot-switch на лету)\n• GemmaHybridLoader (CLIP)\n• SageAttention (T4 ускорение)\n\nГорячее переключение ~1.5 сек."
       ],
-      "title": "📋 Strategy Switch Instructions"
+      "title": "📋 Strategy Switch Demo"
     }
   ],
   "links": [
-    {"id": 1, "origin_id": 2, "origin_slot": 0, "target_id": 3, "target_slot": 0, "type": "MODEL"},
-    {"id": 2, "origin_id": 3, "origin_slot": 0, "target_id": 8, "target_slot": 0, "type": "MODEL"},
-    {"id": 3, "origin_id": 4, "origin_slot": 0, "target_id": 5, "target_slot": 0, "type": "CLIP"},
-    {"id": 4, "origin_id": 4, "origin_slot": 0, "target_id": 6, "target_slot": 0, "type": "CLIP"},
-    {"id": 5, "origin_id": 5, "origin_slot": 0, "target_id": 9, "target_slot": 1, "type": "CONDITIONING"},
-    {"id": 6, "origin_id": 6, "origin_slot": 0, "target_id": 9, "target_slot": 2, "type": "CONDITIONING"},
-    {"id": 7, "origin_id": 7, "origin_slot": 0, "target_id": 9, "target_slot": 3, "type": "LATENT"},
-    {"id": 8, "origin_id": 8, "origin_slot": 0, "target_id": 9, "target_slot": 0, "type": "MODEL"},
-    {"id": 9, "origin_id": 9, "origin_slot": 0, "target_id": 11,"target_slot": 1, "type": "LATENT"},
-    {"id": 10,"origin_id": 10,"origin_slot": 2, "target_id": 11,"target_slot": 0, "type": "VAE"},
-    {"id": 11,"origin_id": 11,"origin_slot": 0, "target_id": 12,"target_slot": 0, "type": "IMAGE"}
+    {"id": 1,  "origin_id": 2,  "origin_slot": 0, "target_id": 3,  "target_slot": 0, "type": "MODEL"},
+    {"id": 2,  "origin_id": 3,  "origin_slot": 0, "target_id": 8,  "target_slot": 0, "type": "MODEL"},
+    {"id": 3,  "origin_id": 4,  "origin_slot": 0, "target_id": 5,  "target_slot": 0, "type": "CLIP"},
+    {"id": 4,  "origin_id": 4,  "origin_slot": 0, "target_id": 6,  "target_slot": 0, "type": "CLIP"},
+    {"id": 5,  "origin_id": 5,  "origin_slot": 0, "target_id": 9,  "target_slot": 1, "type": "CONDITIONING"},
+    {"id": 6,  "origin_id": 6,  "origin_slot": 0, "target_id": 9,  "target_slot": 2, "type": "CONDITIONING"},
+    {"id": 7,  "origin_id": 7,  "origin_slot": 0, "target_id": 9,  "target_slot": 3, "type": "LATENT"},
+    {"id": 8,  "origin_id": 8,  "origin_slot": 0, "target_id": 9,  "target_slot": 0, "type": "MODEL"},
+    {"id": 9,  "origin_id": 9,  "origin_slot": 0, "target_id": 11, "target_slot": 1, "type": "LATENT"},
+    {"id": 10, "origin_id": 10, "origin_slot": 2, "target_id": 11, "target_slot": 0, "type": "VAE"},
+    {"id": 11, "origin_id": 11, "origin_slot": 0, "target_id": 12, "target_slot": 0, "type": "IMAGE"}
   ],
   "groups": [
-    {"title": "1. Memory Diagnostics", "bounding": [50, 50, 350, 150], "color": "#3f789e", "font_size": 18},
-    {"title": "2. Load + Hot-Switch Strategy", "bounding": [50, 240, 350, 400], "color": "#3f789e", "font_size": 18},
-    {"title": "3. Gemma Encoder", "bounding": [450, 240, 380, 730], "color": "#3f789e", "font_size": 18},
-    {"title": "4. SageAttention + KSampler", "bounding": [850, 240, 320, 480], "color": "#3f789e", "font_size": 18},
-    {"title": "5. VAE Decode + Save Video", "bounding": [1200, 50, 380, 600], "color": "#3f789e", "font_size": 18}
+    {"title": "1. Pre-flight Diagnostics", "bounding": [50, 50, 380, 150], "color": "#3f789e", "font_size": 18},
+    {"title": "2. Load + Hot-Switch", "bounding": [50, 240, 350, 400], "color": "#3f789e", "font_size": 18},
+    {"title": "3. Gemma CLIP", "bounding": [450, 240, 380, 690], "color": "#3f789e", "font_size": 18},
+    {"title": "4. SageAttn + KSampler", "bounding": [850, 240, 320, 480], "color": "#3f789e", "font_size": 18},
+    {"title": "5. VAE + Output", "bounding": [1200, 50, 380, 600], "color": "#3f789e", "font_size": 18}
   ],
   "config": {},
   "extra": {
+    "author": "THE-ANGEL-AI (The Angel Studio)",
+    "repo": "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU",
+    "version": "0.3.0-pre",
     "comfyui_version": "0.4.0+",
-    "required_custom_nodes": [
-      "ComfyUI-LTX2-MultiGPU",
-      "ComfyUI-GGUF",
-      "ComfyUI-VideoHelperSuite"
-    ],
+    "required_custom_nodes": ["ComfyUI-LTX2-MultiGPU", "ComfyUI-GGUF", "ComfyUI-VideoHelperSuite"],
     "target_hardware": "Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM)",
     "estimated_time": "35-55 sec (blocks_30_70 + SageAttention)",
     "recommended_quant": "UD-Q5_K_M для качества, UD-Q4_K_M для скорости"
