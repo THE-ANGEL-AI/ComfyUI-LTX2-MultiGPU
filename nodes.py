@@ -26,6 +26,38 @@ except Exception:  # noqa: BLE001
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Module-level helpers (FIX LOW #4: дедупликация _donor_choices)
+# ─────────────────────────────────────────────────────────────────────────────
+def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
+    """FIX LOW #4+#6+#LOW_cpu_machine: динамический donor_device-список.
+
+    Использует torch.cuda.device_count() если torch доступен И CUDA активен;
+    на CPU-only машинах / torch=None fallback не показывает cuda:* опции
+    (юзер не должен видеть то, что упадёт с RuntimeError на load).
+
+    Args:
+        include_cpu: True для Gemma (encoder допускает CPU — он не
+                      участвует в sampling-loop); False для DiT (DiT
+                      не может жить на CPU во время KSampler-step).
+    """
+    choices: list[str] = ["auto"]
+    if torch is not None and torch.cuda.is_available():
+        try:
+            n = int(torch.cuda.device_count())
+            for i in range(n):
+                choices.append(f"cuda:{i}")
+        except Exception:  # noqa: BLE001
+            pass
+        # Гарантируем минимум cuda:0/cuda:1 как realistic defaults для dual-GPU.
+        for tag in ("cuda:0", "cuda:1"):
+            if tag not in choices:
+                choices.append(tag)
+    if include_cpu:
+        choices.append("cpu")
+    return choices
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Узел 1. LTX2_MultiGPU_HybridSplitLoader
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_HybridSplitLoader:
@@ -52,7 +84,6 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
     # DiT-specific donor_device: НЕТ 'cpu' — DiT не может быть на CPU во время sampling.
     # Решение принято в design-discussion: см. commit message + docstring class.
-    _DONOR_DEVICE_CHOICES_DIT: tuple[str, ...] = ("auto", "cuda:0", "cuda:1")
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
@@ -71,8 +102,8 @@ class LTX2_MultiGPU_HybridSplitLoader:
                     ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
                     {"default": "blocks_50_50"},
                 ),
-                # DiT-specific: только cuda:0/cuda:1 (cpu нельзя — sampling требует GPU).
-                "donor_device": (cls._DONOR_DEVICE_CHOICES_DIT, {"default": "auto"}),
+                # FIX LOW #4+#6: module-level dynamic donor_device.
+                "donor_device": (_cuda_donor_choices(include_cpu=False), {"default": "auto"}),
                 "verbose_log": ("BOOLEAN", {"default": False}),
             }
         }
@@ -140,10 +171,8 @@ class LTX2_MultiGPU_GemmaHybridLoader:
     RETURN_TYPES = ("CLIP",)
     RETURN_NAMES = ("clip",)
 
-    # Donor-device options mirror DualCLIPLoaderDisTorch2MultiGPU. Hardcoded
-    # (cuda:0/cuda:1) — INPUT_TYPES вызывается до загрузки torch-стекa,
-    # rompute `torch.cuda.device_count()` здесь ненадёжен.
-    _DONOR_DEVICE_CHOICES: tuple[str, ...] = ("auto", "cuda:0", "cuda:1", "cpu")
+    # Donor-device options FIX LOW #4: дедуп через module-level helper
+    # ``_cuda_donor_choices(include_cpu=True)``.
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
@@ -163,7 +192,7 @@ class LTX2_MultiGPU_GemmaHybridLoader:
             "required": {
                 "clip_name1": enc_opts,
                 "projection_name": proj_opts,
-                "donor_device": (cls._DONOR_DEVICE_CHOICES, {"default": "auto"}),
+                "donor_device": (_cuda_donor_choices(include_cpu=True), {"default": "auto"}),
                 "eject_models": ("BOOLEAN", {"default": False}),
                 "verbose_log": ("BOOLEAN", {"default": False}),
             }
@@ -224,13 +253,15 @@ class LTX2_MultiGPU_MemoryDiagnostics:
         gemma_name: str,
         purge_cache: bool,
     ) -> tuple:
-        """R4: V1 dict-контракт для нод с ui preview.
+        """R4: V1 tuple-контракт — возвращаем ровно ``(report,)``.
 
-        Возвращает ``{"ui": {...}, "result": (...)}``, где длина result
-        строго равна ``len(RETURN_TYPES)``. ComfyUI ``execution.py``
-        использует ``result`` и ``ui`` как два раздельных поля —
-        возврат 2-tuple ``(report, {"ui": ...})`` ломал анпак выходов
-        по схеме R4 (``ValueError: too many values to unpack``).
+        ComfyUI ``execution.py`` анпакает выходы по схеме
+        ``val, = node.FUNCTION(...)``. Dict-возврат формата
+        ``{"ui": ..., "result": (...)}`` понимают только новые версии ComfyUI
+        (V3 preview API); на старых / Kaggle-зерокопии — крашится с
+        ``ValueError: too many values to unpack (expected 1)``.
+        Для консольного preview достаточно print() — он попадает в ComfyUI log
+        stdout и виден без UI.
         """
         from core.memory_tracker import estimate_vram_budget
 
@@ -240,7 +271,7 @@ class LTX2_MultiGPU_MemoryDiagnostics:
             purge_cache=purge_cache,
         )
         print(f"[ComfyUI-LTX2-MultiGPU]\n{report}")
-        return {"ui": {"report": [report]}, "result": (report,)}
+        return (report,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,14 +299,18 @@ class LTX2_MultiGPU_DeviceStrategy:
                     ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
                     {"default": "blocks_50_50"},
                 ),
-            }
+            },
+            "optional": {
+                # FIX MEDIUM_apply_strategy: пропускаем verbose для дегенеративного warn.
+                "verbose_log": ("BOOLEAN", {"default": False}),
+            },
         }
 
-    def apply_strategy(self, model, strategy: str) -> tuple:
+    def apply_strategy(self, model, strategy: str, verbose_log: bool = False) -> tuple:
         from core.gguf_split import apply_strategy as _apply
 
         try:
-            new_patcher = _apply(patcher=model, strategy=strategy)
+            new_patcher = _apply(patcher=model, strategy=strategy, verbose=verbose_log)
         except NotImplementedError as exc:
             raise RuntimeError(
                 f"ComfyUI-LTX2-MultiGPU: {exc}"
