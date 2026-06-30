@@ -54,6 +54,48 @@ except Exception:  # noqa: BLE001
     safe_open = None  # type: ignore[assignment]
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Approximate bits-per-element for GGUF quant types
+#
+# Синхронизировано с core/memory_tracker.QUANT_BITS_APPROX.
+# При изменении там — обновить эту копию.
+# ════════════════════════════════════════════════════════════════════════════
+QUANT_BITS_APPROX: dict[str, float] = {
+    "Q2_K": 2.6,
+    "Q2_K_S": 2.5,
+    "Q2_K_XL": 2.6,
+    "Q3_K_S": 3.0,
+    "Q3_K_M": 3.3,
+    "Q3_K_L": 3.6,
+    "Q3_K_XL": 3.5,
+    "IQ3_XXS": 3.0,
+    "Q4_0": 4.5,
+    "Q4_1": 5.0,
+    "Q4_K_S": 4.0,
+    "Q4_K_M": 4.5,
+    "Q4_NL": 4.5,
+    "Q5_0": 5.5,
+    "Q5_1": 6.0,
+    "Q5_K_S": 5.0,
+    "Q5_K_M": 5.5,
+    "Q6_K": 6.6,
+    "Q8_0": 8.5,
+    "Q8_1": 8.5,
+    "BF16": 16.0,
+    "F16": 16.0,
+    "F32": 32.0,
+}
+_DEFAULT_BITS = 16.0  # fallback для неизвестных типов
+
+# ════════════════════════════════════════════════════════════════════════════
+# Kaggle execution constraints (синхронизировано с core/memory_tracker)
+# ════════════════════════════════════════════════════════════════════════════
+KAGGLE_SYSTEM_RAM_GB = 29.0
+KAGGLE_VRAM_PER_T4_GB = 14.5
+KAGGLE_VRAM_RESERVED_GB = 1.0
+PYTHON_COMFY_RAM_OVERHEAD_GB = 3.5
+
+
 # ─── Constants (synced with MODEL_FACTS §2 / PLAN §5.1) ───────────────────
 STRATEGIES: tuple[str, ...] = (
     "blocks_50_50",  # default: DiT 0..21 -> cuda:0; 22..43 -> cuda:1
@@ -134,6 +176,20 @@ def _resolve_safetensors(spec: str, root: Path | None) -> Path | None:
     return None
 
 
+def _detect_quant_name(basename: str) -> str:
+    """Извлекает имя квантизации из имени файла (e.g. 'Q4_K_M')."""
+    candidates = [
+        "UD-Q4_K_M", "UD-Q5_K_M", "UD-Q3_K_XL", "UD-Q2_K_XL",
+        "Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S",
+        "Q4_K_M", "Q4_K_S", "Q3_K_XL", "Q3_K_L", "Q3_K_M", "Q3_K_S",
+        "Q2_K_XL", "Q2_K", "IQ3_XXS",
+    ]
+    for c in candidates:
+        if c in basename:
+            return c
+    return "?"
+
+
 # ─── Header-only file scanners ───────────────────────────────────────────
 @dataclass
 class GGUFScan:
@@ -141,23 +197,41 @@ class GGUFScan:
     file_gb: float
     n_tensors: int
     total_elements: int
-    fp16_estimate_gb: float
+    fp16_estimate_gb: float       # справочно (полная деквантизация)
+    quant_vram_estimate_gb: float  # реальный VRAM с квантованием
+    quant_name: str                # имя кванта (e.g. "Q4_K_M")
     fp4_estimate_gb: float | None  # если похоже на упакованный FP4
     
     @classmethod
     def scan(cls, path: Path) -> "GGUFScan":
         size_b = int(path.stat().st_size)
         size_gb = size_b / _GIB
+        basename = path.name.upper()
         if gguf is None:
             return cls(
                 path=str(path), file_gb=size_gb, n_tensors=0,
                 total_elements=0, fp16_estimate_gb=size_gb * 2.0,
+                quant_vram_estimate_gb=size_gb,
+                quant_name=_detect_quant_name(basename),
                 fp4_estimate_gb=None,
             )
         # gguf.GGUFReader() в режиме mmap — header прочитан без загрузки весов
         reader = gguf.GGUFReader(str(path))
         n_elem = sum(int(t.n_elements) for t in reader.tensors)
         fp16_gb = n_elem * 2 / _GIB  # n_elements × 2 байта (fp16)
+
+        # ── Quant-aware размер (Kaggle Edition) ──────────────────────────
+        # Итерируем тензоры, смотрим tensor_type и суммируем реальные биты.
+        # city96 GGMLOps держит веса квантованными в VRAM — не fp16.
+        total_bits = 0.0
+        for t in reader.tensors:
+            elements = int(t.n_elements)
+            ttype = str(getattr(t, "tensor_type", "?"))
+            bits_per_element = QUANT_BITS_APPROX.get(ttype, _DEFAULT_BITS)
+            total_bits += elements * bits_per_element
+        quant_vram_gb = (total_bits / 8.0) / _GIB if n_elem else size_gb
+        quant_name = _detect_quant_name(basename)
+
         # Эвристика «это GGUF Q5/Q6 quantization»:
         # packed bytes per element < 1.0 → значит это quantized, не raw fp16
         bpe_packed = (size_b / max(n_elem, 1)) if n_elem else 0.0
@@ -167,6 +241,8 @@ class GGUFScan:
             n_tensors=len(reader.tensors),
             total_elements=n_elem,
             fp16_estimate_gb=fp16_gb,
+            quant_vram_estimate_gb=quant_vram_gb,
+            quant_name=quant_name,
             fp4_estimate_gb=fp4_gb,
         )
 
@@ -408,7 +484,11 @@ def render_text(
             f"  DiT    {Path(gguf.path).name}  "
             f"size={gguf.file_gb:6.2f} GB  "
             f"tensors={gguf.n_tensors}  "
-            f"fp16_proj={gguf.fp16_estimate_gb:6.2f} GB{fp4_extra}"
+            f"quant={gguf.quant_name}"
+        )
+        out.append(
+            f"         VRAM≈{gguf.quant_vram_estimate_gb:6.2f} GB (квант)  "
+            f"fp16≈{gguf.fp16_estimate_gb:6.2f} GB (справочно){fp4_extra}"
         )
     else:
         out.append("  DiT    (not provided / not found)")
@@ -423,7 +503,7 @@ def render_text(
         out.append("  Gemma  (not provided / skipped)")
     
     out.append("\n[Hardware]")
-    cap0_gb = cap1_gb = 15.0  # MODEL_FACTS default (T4 class)
+    cap0_gb = cap1_gb = KAGGLE_VRAM_PER_T4_GB - KAGGLE_VRAM_RESERVED_GB  # Kaggle default
     if gpu_rows:
         for r in gpu_rows:
             cap = _fmt_mib_to_gb(r["memory_total_mib"])
@@ -443,16 +523,36 @@ def render_text(
         )
     else:
         out.append(
-            "  (nvidia-smi unavailable; using MODEL_FACTS default "
-            "cap=15.0 ГБ / card — typical T4)"
+            "  (nvidia-smi unavailable; using Kaggle default "
+            f"cap={KAGGLE_VRAM_PER_T4_GB - KAGGLE_VRAM_RESERVED_GB:.1f} ГБ / card — typical T4)"
         )
     
     out.append("\n[Other components — fixed estimates, GB]")
     for k, v in COMPONENT_FOOTPRINT_GB.items():
         out.append(f"  {k:>22s}: {v:5.2f}")
-    
+
+    # ── RAM Budget (Kaggle Edition) ─────────────────────────────────────
+    if gguf is not None:
+        ram_used = gguf.file_gb + PYTHON_COMFY_RAM_OVERHEAD_GB
+        out.append(f"\n[RAM Budget]")
+        out.append(
+            f"  DiT mmap: {gguf.file_gb:.2f} GB + "
+            f"overhead: {PYTHON_COMFY_RAM_OVERHEAD_GB:.2f} GB "
+            f"= {ram_used:.2f} GB / {KAGGLE_SYSTEM_RAM_GB:.1f} GB RAM"
+        )
+        if ram_used > KAGGLE_SYSTEM_RAM_GB:
+            out.append(
+                f"  ⚠️  OOM RISK: {ram_used:.2f} GB > {KAGGLE_SYSTEM_RAM_GB:.1f} GB RAM! "
+                f"mmap будет thrash'ить."
+            )
+        else:
+            out.append(
+                f"  ✓  RAM OK ({KAGGLE_SYSTEM_RAM_GB - ram_used:.1f} GB свободно)"
+            )
+
     out.append("\n[Strategy projection]")
-    dit_gb = gguf.fp16_estimate_gb if gguf else 0.0
+    # Kaggle Edition: используем QUANT-AWARE оценку VRAM, а не fp16.
+    dit_gb = gguf.quant_vram_estimate_gb if gguf else 0.0
     gemma_gb = sts.fp16_estimate_gb if sts else None
     for strat in STRATEGIES:
         proj = project_strategy(
@@ -481,7 +581,17 @@ def render_text(
     if sts is not None and sts.n_tensors == 0:
         out.append("\n⚠ Safetensors header не распарсен — установлен ли "
                    "`pip install safetensors`?")
-    
+
+    if gguf is not None and gguf.quant_vram_estimate_gb > 12.0:
+        out.append(
+            f"\n💡 Квант {gguf.quant_name} — {gguf.quant_vram_estimate_gb:.1f} GB VRAM."
+        )
+        if gguf.quant_vram_estimate_gb > 14.0:
+            out.append(
+                "    На Kaggle T4×2 (14.5 GB каждая) — tight. "
+                "Рассмотрите Q4_K_M (~12 GB VRAM) или Q3_K_XL (~10 GB VRAM)."
+            )
+
     if smi_samples:
         out.append(
             f"\n[nvidia-smi samples] {len(smi_samples)} polls @ "
@@ -604,7 +714,7 @@ def main(argv: list[str] | None = None) -> int:
     
     # ── Hardware probe ─────────────────────────────────────────────────────
     gpu_rows = _nvidia_smi_query()
-    cap0_gb = cap1_gb = 15.0  # T4 default per MODEL_FACTS
+    cap0_gb = cap1_gb = KAGGLE_VRAM_PER_T4_GB - KAGGLE_VRAM_RESERVED_GB
     if gpu_rows:
         cap0_gb = _fmt_mib_to_gb(gpu_rows[0]["memory_total_mib"])
         cap1_gb = (
@@ -614,7 +724,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stderr.write(
             "WARN: nvidia-smi недоступен (нет в PATH или нет CUDA) — "
-            "используются MODEL_FACTS дефолты cap=15.0 ГБ на карту.\n"
+            f"используются Kaggle дефолты cap={KAGGLE_VRAM_PER_T4_GB - KAGGLE_VRAM_RESERVED_GB:.1f} ГБ на карту.\n"
         )
     
     # ── Sми poll (single или background) ───────────────────────────────────
@@ -641,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
     
     # ── Output ─────────────────────────────────────────────────────────────
     if args.json:
+        dit_gb = gguf_scan.quant_vram_estimate_gb if gguf_scan else 0.0
         payload = {
             "project_root": str(project_root) if project_root else None,
             "files": {
@@ -649,17 +760,23 @@ def main(argv: list[str] | None = None) -> int:
             },
             "hardware": gpu_rows,
             "components_gb": COMPONENT_FOOTPRINT_GB,
+            "kaggle_constants": {
+                "system_ram_gb": KAGGLE_SYSTEM_RAM_GB,
+                "vram_per_t4_gb": KAGGLE_VRAM_PER_T4_GB,
+                "vram_reserved_gb": KAGGLE_VRAM_RESERVED_GB,
+                "ram_overhead_gb": PYTHON_COMFY_RAM_OVERHEAD_GB,
+            },
             "strategies": {
                 s: project_strategy(
                     s,
-                    gguf_scan.fp16_estimate_gb if gguf_scan else 0.0,
+                    dit_gb,
                     sts_scan.fp16_estimate_gb if sts_scan else None,
                     cap0_gb, cap1_gb, COMPONENT_FOOTPRINT_GB,
                 )
                 for s in STRATEGIES
             },
             "recommendation": recommend_strategy(
-                gguf_scan.fp16_estimate_gb if gguf_scan else 0.0,
+                dit_gb,
                 sts_scan.fp16_estimate_gb if sts_scan else None,
                 cap0_gb, cap1_gb, COMPONENT_FOOTPRINT_GB,
                 preferred=args.strategy,
@@ -674,7 +791,8 @@ def main(argv: list[str] | None = None) -> int:
         print(render_text(args, gguf_scan, sts_scan, gpu_rows, smi_samples))
     
     # ── Exit code ──────────────────────────────────────────────────────────
-    dit_gb = gguf_scan.fp16_estimate_gb if gguf_scan else 0.0
+    # Kaggle Edition: quant-aware оценка для exit-code логики.
+    dit_gb = gguf_scan.quant_vram_estimate_gb if gguf_scan else 0.0
     gemma_gb = sts_scan.fp16_estimate_gb if sts_scan else None
     recommended = recommend_strategy(
         dit_gb, gemma_gb, cap0_gb, cap1_gb, COMPONENT_FOOTPRINT_GB,
