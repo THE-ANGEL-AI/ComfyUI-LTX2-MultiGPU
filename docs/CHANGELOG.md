@@ -7,6 +7,64 @@
 
 ---
 
+## [v0.3.0-pre] — 2026-06-30 (Kaggle Edition: VRAM parking, SageAttention, memory tracker)
+
+### Added (новые фичи)
+
+- **VRAM Parking (White Paper §8.1)** — нода `LTX2_MultiGPU_VRAMParking` и модуль
+  `core/vram_parking.py`. Временно переносит ВСЕ DiT блоки (+ embed/head слои) на
+  CPU между Pass 1 и Pass 2, освобождая VRAM для VAE decode → upscale → VAE
+  encode. Идемпотентна (флаг `parked` в `model_options`). Безопасна для GGUF —
+  использует `_ltx2_original_to` вместо `inner.to()` чтобы не триггерить dequant.
+  `unpark_dit()` делегирует в `apply_strategy()` для точного восстановления
+  GPU-layout с хуками.
+
+- **SageAttention-SM75 (White Paper §6)** — нода `LTX2_MultiGPU_SageAttention`
+  и модуль `core/sage_attention.py`. Интеграция через `model_options['attention_patch']`
+  — стандартный ComfyUI механизм. Автоопределение: `import sageattn` в рантайме;
+  если не установлен — тихо возвращает модель без патча. Wrapper делегирует в
+  `sageattn.sageattn(q, k, v)` для INT8 QK^T + FP16 PV на T4 (Turing SM75).
+  `model.clone()` изолирует мутации от оригинального графа.
+
+- **Kaggle Edition memory tracker** — полный реврайт `core/memory_tracker.py`:
+  - `gguf_quant_aware_bytes(path)` — читает GGUF header (без загрузки весов!),
+    считает реальный quant-размер по `QUANT_BITS_APPROX` (24 quant-типа: Q4_0..BF16),
+    возвращает `(file_size, vram_quant, fp16_equiv)`.
+  - RAM бюджет: `KAGGLE_SYSTEM_RAM_GB = 29.0`, `KAGGLE_VRAM_PER_T4_GB = 14.5`,
+    `KAGGLE_VRAM_RESERVED_GB = 1.0` (резерв под драйверы), `PYTHON_COMFY_RAM_OVERHEAD_GB = 3.5`.
+  - `auto_select_strategy()` — приоритет: blocks_50_50 > blocks_30_70 > pipeline.
+  - Quant-предупреждения: если Q5_K_M не влезает → советует Q4_K_M или Q3_K_XL.
+  - Совместимость: legacy `gguf_estimate_bytes()` сохранён.
+
+- **example_workflows/** — 3 готовых воркфлоу JSON для импорта в ComfyUI:
+  - `ltx2_full_2pass_video.json` — полный 2-pass пайплайн со всеми 6 нодами.
+  - `ltx2_strategy_switch.json` — демо горячего переключения стратегий.
+  - `ltx2_diagnostics_first.json` — pre-flight сравнение 4 quant-типов.
+
+### Fixed (критические исправления)
+
+- **CRITICAL (`__init__.py`)**: `_build_config()` использовал
+  `importlib.import_module('nodes')` который импортировал **ComfyUI root `nodes.py`**
+  вместо нашего `nodes.py` → `NODE_CLASS_MAPPINGS` был пуст → все 6 нод были
+  невидимы в ComfyUI. Заменён на относительный импорт `from . import nodes`.
+
+### Changed (изменения)
+
+- **nodes.py**: добавлены ноды 5 (`VRAMParking`) и 6 (`SageAttention`).
+  Всего 6 нод в `NODE_CLASS_MAPPINGS`.
+- **pyproject.toml**: `Publisher=THE-ANGEL-AI`, `PublisherEmail=gi.the.angel@gmail.com`,
+  `DisplayName=LTX-2 MultiGPU Hybrid Split`, `Icon=assets/icon.png`.
+- **README.md**: миграционная заметка для пользователей dreamfast.
+
+### Test coverage
+
+- `tests/test_vram_parking.py` — 11 тестов (идемпотентность, round-trip, missing config).
+- `tests/test_sage_attention.py` — 9 тестов (мокинг `sys.modules`, делегирование wrapper).
+- `tests/test_init.py` / `tests/test_nodes.py` — обновлены под 6 нод.
+- Все тесты (6 модулей, 89 тестов) проходят: `python -m unittest discover tests -v`.
+
+---
+
 ## [v0.2.2-pre] — 2026-06-30 (pre-T4x2 deploy: attribution + Russian UX)
 
 ### Проблема, которую решает этот релиз

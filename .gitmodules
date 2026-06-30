@@ -1,3 +1,0 @@
-[submodule "custom_nodes/ComfyUI-LTX2-MultiGPU"]
-	path = custom_nodes/ComfyUI-LTX2-MultiGPU
-	url = https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU.git

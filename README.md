@@ -6,7 +6,7 @@
 [![Sponsor: Boosty](https://img.shields.io/badge/Sponsor-Boosty-orange.svg)](https://boosty.to/the_angel/donate)
 [![ComfyUI Custom Node](https://img.shields.io/badge/ComfyUI-Custom_Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org)
-[![Version](https://img.shields.io/badge/version-0.2.2--pre-green.svg)]()
+[![Version](https://img.shields.io/badge/version-0.3.0--pre-green.svg)]()
 
 > 🚧 **Скоро будет демо-GIF.** Положите файл `docs/hero.gif` (480p→720p прогон) в этот репозиторий, чтобы заменить этот блок. А пока просто добавьте ноду **LTX-2 Memory Diagnostics** перед KSampler — она покажет состояние обеих видеокарт в начале сессии.
 
@@ -43,35 +43,41 @@
 
 ## Что в коробке
 
-Четыре ноды появятся в разделе **Add Node → LTX-2 MultiGPU**:
+Шесть нод появятся в разделе **Add Node → LTX-2 MultiGPU**:
 
 | Технический ключ (для workflow_api.json) | Отображение в меню | Что делает простыми словами | Чем заменяет |
 |---|---|---|---|
 | `LTX2_MultiGPU_HybridSplitLoader` | **Разделитель модели (2 GPU)** | Загружает GGUF DiT, делит 44 блока между двумя картами, соединяет их хуком для передачи данных | `UnetLoaderGGUFDisTorch2MultiGPU` |
 | `LTX2_MultiGPU_GemmaHybridLoader` | **Загрузчик промптов (Gemma 3)** | Загружает Gemma 3 12B FP4 + `text_projection` как один CLIP, кладёт на нужные карты | `DualCLIPLoaderDisTorch2MultiGPU` |
-| `LTX2_MultiGPU_MemoryDiagnostics` | **Диагностика видеопамяти** | Перед запуском печатает состояние обеих видеокарт и прикидывает, хватит ли памяти | — |
+| `LTX2_MultiGPU_MemoryDiagnostics` | **Диагностика видеопамяти** | Перед запуском считает VRAM/RAM бюджет, авто-выбирает стратегию, читает реальный quant из GGUF header | — |
 | `LTX2_MultiGPU_DeviceStrategy` | **Переключатель стратегии** | Позволяет переключить стратегию прямо во время сессии, без перезагрузки модели | — |
+| `LTX2_MultiGPU_VRAMParking` | **Парковка видеопамяти** | Временно убирает DiT блоки на CPU между Pass 1 и Pass 2, освобождая VRAM для VAE/upscale | — |
+| `LTX2_MultiGPU_SageAttention` | **Патч SageAttention (T4)** | Ускоряет внимание ~1.5× через квантованное внимание (INT8 QK^T + FP16 PV) для Turing SM75 | — |
 
 > 💡 **Привязка в workflow:** названия в workflow_api.json не менялись — по-прежнему левый столбец из таблицы. Русские слова из второго столбца нужны только чтобы быстро найти ноду в меню глазами.
+>
+> 🧪 **Готовые воркфлоу:** лежат в папке [`example_workflows/`](example_workflows/) — полный 2-pass пайплайн, strategy switch demo, diagnostics-first.
 
 ---
 
-## Как память разложена на картах (Q6_K + Gemma 12B FP4)
+## Как память разложена на картах (UD Q4_K_M + Gemma 12B FP4, Kaggle T4×2)
 
 ```
-            ┌─────────── cuda:0 (15 ГБ) ─────────────┐  ┌─────────── cuda:1 (15 ГБ) ─────────────┐
-            │  DiT блоки 0..21   (~9 ГБ)             │  │  DiT блоки 22..43  (~9 ГБ)            │
-            │  text_projection   (~2.1 ГБ)           │  │  Gemma 3 12B FP4    (~7.5 ГБ)         │
-            │  Video VAE         (~1.4 ГБ)           │  │  Audio VAE          (~0.4 ГБ)         │
-            │  Latent Upscaler   (~1.0 ГБ)           │  │                                      │
-            │  LoRы (объединённые) (~1–3 ГБ)          │  │                                      │
-            │  Scratch SageAttn  (~2.1 ГБ)           │  │  Scratch SageAttn   (~2.1 ГБ)         │
-            │  ─────────────────────────────         │  │  ──────────────────────────────       │
-            │  ≈ 10–14 ГБ итог   ✅ хватает         │  │  ≈ 16–17 ГБ итог   ✅ хватает         │
+            ┌─────────── cuda:0 (14.5 ГБ) ───────────┐  ┌─────────── cuda:1 (14.5 ГБ) ───────────┐
+            │  DiT блоки 0..21   (~7.0 ГБ)           │  │  DiT блоки 22..43  (~7.0 ГБ)           │
+            │  text_projection   (~2.1 ГБ)           │  │  Gemma 3 12B FP4    (~7.5 ГБ)          │
+            │  Video VAE         (~1.4 ГБ)           │  │  Audio VAE          (~0.4 ГБ)          │
+            │  Latent Upscaler   (~1.0 ГБ)           │  │                                       │
+            │  LoRы (объединённые) (~1–3 ГБ)          │  │                                       │
+            │  Scratch SageAttn  (~2.1 ГБ)           │  │  Scratch SageAttn   (~2.1 ГБ)          │
+            │  ─────────────────────────────         │  │  ──────────────────────────────        │
+            │  ≈ 12–15 ГБ итог   ⚠️ tight           │  │  ≈ 14–17 ГБ итог   ⚠️ tight            │
             └─────────────────────────────────────┘  └─────────────────────────────────────────┘
 ```
 
-Остаётся ~1–4 ГБ запаса на каждой карте — хватит для апскейла до 720p. *(Цифры учитывают **2.1 ГБ SageAttn scratch** на каждой карте; если SageAttn выключен — отнимайте по 2.1 ГБ с каждой стороны.)*
+С UD Q4_K_M — влезает, но впритык. **Рекомендация:** используйте `VRAMParking` между Pass 1 и Pass 2 чтобы освободить DiT блоки на время VAE decode → upscale → VAE encode.
+
+*(Цифры для **UD Q4_K_M** (~14 GB quant). Для Q5_K_M (~18 GB) — обязателен `blocks_30_70` + `VRAMParking`. Для Q3_K_XL (~12.5 GB) — запас с комфортом, можно `blocks_50_50`.)*
 
 ---
 
@@ -197,16 +203,19 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 
 ---
 
-## Проверенные GGUF-квантизации
+## Проверенные GGUF-квантизации (Unsloth Dynamic 2.0)
 
-Размеры взяты из `MODEL_FACTS.md §2` (таблица размеров компонентов). Точные размеры файлов для конкретного релиза LTX-Video 22B смотрите на Hugging Face-страничке модели — здесь примерные базовые цифры для свежей загрузки.
+> **Unsloth Dynamic 2.0** — per-layer mixed-precision: attention слои в Q6/Q8, FFN в Q4/Q3. Качество выше чем static imatrix quant при том же размере.
 
-| GGUF-квантизация | Примерный размер | Результат |
-|---|---|---|
-| Q4_K_M | ~17 ГБ | Комфортно — влезает с запасом |
-| Q5_K_M | ~21 ГБ | Влезает — стандарт для Kaggle T4×2 |
-| Q6_K | ~24 ГБ | Лучшее качество — работает, если обе карты ≥24 ГБ |
-| Q3 / Q2 | < 12 ГБ | Не тестировали, ожидайте видимой потери качества |
+| GGUF-квантизация | Размер | Bits/param | 2×T4? | Рекомендация |
+|---|---|---|---|---|
+| **UD-Q4_K_M** | ~14 GB | ~4.2 | ✅ OK | **Рекомендовано** — sweet spot качество/память |
+| UD-Q3_K_XL | ~12.5 GB | ~3.5 | ✅ OK | Запасной вариант, 1×T4 совместим |
+| UD-Q5_K_M | ~18 GB | ~5.2 | ⚠️ Tight | Только с blocks_30_70 + VRAMParking |
+| UD-Q2_K_XL | ~11 GB | ~2.6 | ✅ OK | Экономия памяти, заметная потеря качества |
+| UD-Q6_K | ~20 GB | ~6.5 | ❌ OOM | Только на 24 GB картах |
+
+> 💡 **Kaggle T4×2 (14.5 GB каждая):** UD-Q4_K_M — оптимальный выбор. Q5_K_M возможен с `blocks_30_70` + VRAMParking. Запустите [`ltx2_diagnostics_first.json`](example_workflows/ltx2_diagnostics_first.json) чтобы проверить ваш quant перед загрузкой.
 
 ---
 
@@ -232,10 +241,12 @@ KV-кеш Gemma растёт с длиной промпта. Если получ
 
 ## Хочется поковыряться
 
-Самое интересное живёт в двух файлах:
+Самое интересное живёт в этих файлах:
 
-- `core/gguf_split.py` — GGUF-сплиттер + установка forward-хука,
-- `core/memory_tracker.py` — расчёт VRAM-потребности до запуска.
+- `core/gguf_split.py` — GGUF-сплиттер + установка forward-хука + apply_strategy,
+- `core/memory_tracker.py` — Kaggle Edition: quant-aware VRAM/RAM расчёт + auto-strategy,
+- `core/vram_parking.py` — парковка DiT блоков на CPU между проходами,
+- `core/sage_attention.py` — интеграция SageAttention-SM75 для T4.
 
 Если хотите подробную дизайн-историю (размеры компонентов, математика per-strategy, почему `cpu` отвергается для DiT) — см. `PLAN.md` и `MODEL_FACTS.md` в родительской директории.
 
