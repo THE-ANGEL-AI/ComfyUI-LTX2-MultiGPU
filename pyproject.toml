@@ -1,7 +1,8 @@
 [project]
 name = "ComfyUI-LTX2-MultiGPU"
 description = "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2x T4 (Kaggle). Replaces ComfyUI-MultiGPU DisTorch2 regex splitting with explicit block-aware sharding and forward-hook hidden-state transfer."
-version = "0.1.0"
+# 2026-06-30 — synchronized with CHANGELOG.md v0.2.0 (SoloAngel/SP-release)
+version = "0.2.0"
 license = { text = "GPL-3.0-or-later" }
 authors = [
     { name = "The Angel Studio", email = "gi.the.angel@gmail.com" }

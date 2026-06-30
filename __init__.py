@@ -7,8 +7,8 @@ License: MIT
 узле НЕ должен ломать загрузку всего пакета (видно в меню Add Node).
 """
 
-# VERSION синхронизирован с pyproject.toml
-__version__ = "0.1.0"
+# VERSION синхронизирован с pyproject.toml (release v0.2.0, 2026-06-30)
+__version__ = "0.2.0"
 __author__ = "The Angel Studio"
 
 NODE_CONFIG: list[dict] = [
