@@ -943,19 +943,47 @@ def load_gemma_hybrid(
 
     proj_param_count = 0
     encoder_param_count = 0
+    proj_move_failures: list[str] = []
 
-    # Parametры projection → primary_dev
+    # Parametры projection → primary_dev.
+    # FIX HIGH (silent projection move failure): если proj-параметр НЕ
+    # переехал на primary_dev (torch=None или device-mismatch), pre-hook будет
+    # двигать hidden_states на cuda:0, а proj-weights останутся на CPU/donor →
+    # неприятный RuntimeError в середине sampling-loop. Собираем fail-list и
+    # ПОСЛЕ цикла raise'им с понятным именем параметра и возможной причиной.
+    # Skip raise для тестовых сред без torch (HF #1: verbose-gated WARN не
+    # защищает prod — upstream kingjin не знал что мы стоим на cpu device).
     with mm.cuda_device_context(primary_dev):
         for pname, p in list(inner.named_parameters()):
             if "text_projection" not in pname.lower() and not _looks_like_proj_path(pname):
                 continue
             if _move_param(p, primary_dev):
                 proj_param_count += 1
-            elif verbose:
-                print(
-                    f"[ComfyUI-LTX2-MultiGPU] WARN: proj param {pname!r} → "
-                    f"{primary_dev} failed (torch=None или device mismatch)"
-                )
+            else:
+                proj_move_failures.append(pname)
+
+    # Raise если есть failures и torch доступен.
+    # (При torch=None полная silent-деградация — мы вне ComfyUI, явный raise
+    # зашумит тестсьют; User-runner увидит чистую ошибку через ``verbose_log``.)
+    if proj_move_failures and torch is not None:
+        sample_names = ", ".join(repr(n) for n in proj_move_failures[:5])
+        more = (
+            f" и ещё {len(proj_move_failures) - 5}"
+            if len(proj_move_failures) > 5 else ""
+        )
+        raise RuntimeError(
+            f"load_gemma_hybrid: не удалось перенести {len(proj_move_failures)} "
+            f"text_projection параметров на {primary_dev} (sample: {sample_names}{more}). "
+            f"Проверьте свободную VRAM на primary и что donor_device != 'cpu' "
+            f"для параметров проекции. Sampling с half-moved projection "
+            f"крешится с confusing 'device mismatch' на cuda:0."
+        )
+    elif proj_move_failures and verbose:
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] WARN: {len(proj_move_failures)} proj params "
+            f"не перенесены (torch=None, тест-окружение): "
+            f"{[n for n in proj_move_failures[:3]]}…"
+        )
 
     # Parametры encoder → donor_dev
     # Если donor_device='cpu' — пропускаем move: encoder остаётся на исходном
@@ -972,16 +1000,8 @@ def load_gemma_hybrid(
                         f"[ComfyUI-LTX2-MultiGPU] WARN: encoder param {pname!r} → "
                         f"{donor_dev} failed (torch=None или device mismatch)"
                     )
-    elif verbose:
-        encoder_param_count = sum(
-            1 for _ in inner.named_parameters()
-            if "text_projection" not in _.lower()
-            and not _looks_like_proj_path(_)
-        )
-        print(
-            f"[ComfyUI-LTX2-MultiGPU] donor_device=cpu — {encoder_param_count} "
-            f"encoder params остаются на исходном device (без .to())."
-        )
+    # NOTE (v0.2.2): старый ``elif verbose: encoder_param_count = sum(...); print(...)``
+    # УДАЛЁН — его функционал поглощён unconditional-блоком ниже (FIX LOW #3).
 
     # Buffers (key embedding_table, registered buffers и т.д.)
     with mm.cuda_device_context(primary_dev):
@@ -995,6 +1015,26 @@ def load_gemma_hybrid(
                 if "text_projection" in bname.lower() or _looks_like_proj_path(bname):
                     continue
                 _move_buffer(b, donor_dev)
+
+    # FIX LOW #3 (encoder_param_count unconditional): даже если verbose=False
+    # и donor=cpu, downstream-ноды (сэмплер debug-info, MID-7) могут читать
+    # `final_patcher.model_options["ltx2_multigpu_gemma_split"]["encoder_param_count"]`.
+    # Раньше эта переменная считалась ТОЛЬКО внутри `elif verbose:` — на
+    # silent-path она оставалась = 0 → ложный отчёт '0 энкодерных параметров'.
+    # Считаем всегда (дешёвый named_parameters walk; порядка ms).
+    if donor_is_cpu:
+        # FIX PRODUCTION tuple-unpack bug: named_parameters() yields tuples
+        # ``(name, tensor)``; ``_.lower()`` падало с AttributeError. Распаковываем.
+        encoder_param_count = sum(
+            1 for name, _p in inner.named_parameters()
+            if "text_projection" not in name.lower()
+            and not _looks_like_proj_path(name)
+        )
+        if verbose:
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] donor_device=cpu — {encoder_param_count} "
+                f"encoder params остаются на исходном device (без .to())."
+            )
 
     if verbose:
         print(
@@ -1045,6 +1085,50 @@ def load_gemma_hybrid(
             if modname == "text_projection" or modname.endswith(".text_projection"):
                 proj_module = mod
                 break
+
+    # FIX CRITICAL (hook accumulation + leak path, v0.2.2 polish): ComfyUI
+    # кеширует результат ``comfy.sd.load_clip`` и при повторных вызовах
+    # load_gemma_hybrid через эту ноду мы получаем тот же ``inner``. Без
+    # очистки каждый вызов навешивает НОВЫЙ forward_pre_hook на
+    # ``proj_module._forward_pre_hooks`` → O(n) хуков на n-м вызове.
+    #
+    # ВАЖНО leak-path fix (reviewer v0.2.2): cleanup ОБЯЗАН работать даже если
+    # proj_module is None (Gemma wrapper без прямого text_projection модуля).
+    # Per-patcher handle list и nn.Module-level _forward_pre_hooks дикты
+    # разные — оба чистятся здесь безусловно; proj_module-specific чистится
+    # только когда proj_module есть.
+    _remove_stored_hooks(patcher_obj)
+    try:
+        hd = getattr(inner, "_forward_pre_hooks", None)
+        if hd is not None:
+            # Dict[OrderedDict[int, RemovableHandle]] — собрать ключи заранее,
+            # иначе удаление в итерации может крэшнуть.
+            for k in list(hd.keys()):
+                try:
+                    hd[k].remove()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    del hd[k]
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+    if proj_module is not None:
+        try:
+            hd = getattr(proj_module, "_forward_pre_hooks", None)
+            if hd is not None:
+                for k in list(hd.keys()):
+                    try:
+                        hd[k].remove()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        del hd[k]
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
 
     if (
         proj_module is not None

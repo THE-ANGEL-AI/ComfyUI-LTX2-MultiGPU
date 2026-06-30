@@ -82,7 +82,17 @@ class TestSplitBlocksIndices(unittest.TestCase):
 
     def test_all_STRATEGIES_resolvable(self):
         """Каждая strategy из публичного STRATEGIES tuple обязана вернуть tuple
-        без exceptions и без невалидных индексов."""
+        без exceptions и без невалидных индексов.
+
+        ⚠️ Caveat (false-negative trap): этот тест НЕ ловит ситуацию, когда
+        кто-то добавил новую split-bearing strategy в ``STRATEGIES`` tuple
+        (например, ``blocks_70_30``) и ЗАБЫЛ добавить соответствующую ветку в
+        ``_split_blocks_indices`` — функция дефолтно возвращает ``()`` без
+        raise, тест passes, а split-mode silently no-op'ит → runtime OOM на
+        user-machine. Дополнительная защита — реальная runtime-validation в
+        ``apply_strategy`` (визуальный WARN + fallback на primary_dev) и
+        review'nит это изменение руками. Не полагайтесь только на unittest.
+        """
         for strategy in STRATEGIES:
             with self.subTest(strategy=strategy):
                 result = _split_blocks_indices(strategy)
