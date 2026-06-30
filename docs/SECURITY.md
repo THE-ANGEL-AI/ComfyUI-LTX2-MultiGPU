@@ -74,7 +74,7 @@ URL: `https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/security/advisories/
 
 - **Баги в upstream-зависимостях** (`gguf`, `safetensors`, `comfy-core`, `pollockjj/ComfyUI-MultiGPU`). Репортите upstream, не нам.
 - **Баги в model-весах** (LTX 2.3 / Gemma 3). Это license / content-policy, не security — пишите авторам модели.
-- **Документированное поведение с WARN**: single-GPU fallback, `effective_donor == primary_dev`, `secondary_dev == primary_dev`. Это **by-design** UX — см. README «Советы и грабли» + `nnodes.py` § `verbose_log`.
+- **Документированное поведение с WARN**: single-GPU fallback, `effective_donor == primary_dev`, `secondary_dev == primary_dev`. Это **by-design** UX — `nodes.py` § `verbose_log`.
 - **Performance issues / OOM**. На 2×T4 (16 ГБ × 2) с LTX 2.3 22B GGUF мы **ожидаем** OOM на больших разрешениях — это **не** security, это memory-budget issue.
 - **Запросы на фичи / UX-предложения**. Используйте [GitHub Discussions](https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU/discussions) или Issues с `enhancement` label.
 
