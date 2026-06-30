@@ -52,6 +52,7 @@ __all__ = [
     "STRATEGIES",
     "classify_tensor",
     "resolve_devices",
+    "resolve_donor_device",
     "hybrid_split_gguf",
     "load_gemma_hybrid",
     "apply_strategy",
@@ -116,7 +117,7 @@ def resolve_devices() -> tuple[Any, Any]:
     return primary, secondary
 
 
-def _resolve_donor_device(spec: str, primary: Any, secondary: Any) -> Any:
+def resolve_donor_device(spec: str, primary: Any, secondary: Any) -> Any:
     """Приводит donor_device string → torch.device для encoder'а Gemma.
 
     Семантика:
@@ -475,7 +476,7 @@ def hybrid_split_gguf(
 
     # ── Шаг 2: target devices ───────────────────────────────────────────────
     primary_dev, secondary_dev = resolve_devices()
-    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
     donor_is_cpu = str(donor_dev).startswith("cpu")
 
     # Defensive: cpu как donor для DiT — anti-feature. INPUT_TYPES HybridSplitLoader
@@ -854,7 +855,7 @@ def load_gemma_hybrid(
         raise RuntimeError("load_gemma_hybrid требует ComfyUI runtime")
 
     primary_dev, secondary_dev = resolve_devices()
-    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
     donor_is_cpu = (str(donor_dev).startswith("cpu"))
 
     if verbose:
@@ -1315,7 +1316,7 @@ def apply_strategy(
 
     primary_dev, secondary_dev = resolve_devices()
     # NEW (v0.2.1): donor_device resolve — раньше был хардкод secondary_dev.
-    donor_dev = _resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
     donor_is_cpu = str(donor_dev).startswith("cpu")
     effective_donor = secondary_dev if donor_is_cpu else donor_dev
     if donor_is_cpu:

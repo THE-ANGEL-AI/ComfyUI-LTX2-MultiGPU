@@ -586,30 +586,11 @@ class LTX2_MultiGPU_VAELoader:
                 f"comfy.sd / model_management недоступны: {exc}"
             ) from exc
 
-        # ── Разрешаем device ────────────────────────────────────────────
-        primary_dev = mm.get_torch_device()
+        # ── Разрешаем device (делегирует в core/gguf_split) ────────────
+        from core.gguf_split import resolve_devices, resolve_donor_device
 
-        # Определяем secondary (cuda:1 если есть, иначе primary)
-        if torch.cuda.is_available() and torch.cuda.device_count() >= 2:
-            idx = primary_dev.index if primary_dev.index is not None else 0
-            secondary_dev = torch.device("cuda", int((idx + 1) % torch.cuda.device_count()))
-        else:
-            secondary_dev = primary_dev
-
-        spec = (donor_device or "auto").strip().lower()
-        if spec == "auto":
-            target_dev = secondary_dev
-        elif spec == "cuda:0":
-            target_dev = primary_dev
-        elif spec == "cuda:1":
-            target_dev = secondary_dev
-        elif spec == "cpu":
-            target_dev = torch.device("cpu")
-        else:
-            try:
-                target_dev = torch.device(spec)
-            except Exception:  # noqa: BLE001
-                target_dev = secondary_dev
+        primary_dev, secondary_dev = resolve_devices()
+        target_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
 
         # ── Загружаем VAE ───────────────────────────────────────────────
         vae_path = folder_paths.get_full_path("vae", vae_name)
