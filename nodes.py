@@ -521,6 +521,150 @@ class LTX2_MultiGPU_SageAttention:
         return (patcher,)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Узел 7. LTX2_MultiGPU_VAELoader
+# ─────────────────────────────────────────────────────────────────────────────
+class LTX2_MultiGPU_VAELoader:
+    """VAE загрузчик с выбором GPU для VAE Decode/Encode.
+
+    На T4×2 (14.5 GB каждая) VAE decode (~3-5 GB VRAM) конкурирует
+    с DiT/Gemma за память. Эта нода позволяет явно выбрать GPU для
+    VAE, чтобы избежать OOM между Pass 1 и Pass 2 (VAE decode → upscale
+    → VAE encode).
+
+    Использует ``comfy.sd.load_vae()`` для загрузки и ``.to(device)``
+    для явного размещения на выбранном GPU.
+    """
+
+    NODE_ID = "LTX2_MultiGPU_VAELoader"
+    DISPLAY_NAME = "🖼️ VAE Загрузчик (GPU)"
+
+    FUNCTION = "load"
+    CATEGORY = "THE-ANGEL-AI"
+    OUTPUT_NODE = False
+
+    RETURN_TYPES = ("VAE",)
+    RETURN_NAMES = ("vae",)
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        # FIX dropdown-bug: всегда dropdown (даже пустой) если _FOLDER_PATHS_OK.
+        if _FOLDER_PATHS_OK:
+            try:
+                vae_choices: list = folder_paths.get_filename_list("vae")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                vae_choices = []
+            vae_opts: tuple = (vae_choices,)
+        else:
+            vae_opts = ("STRING", {"default": ""})
+        return {
+            "required": {
+                "vae_name": vae_opts,
+                # VAE может жить на CPU между вызовами — include_cpu=True.
+                "donor_device": (_cuda_donor_choices(include_cpu=True), {"default": "auto"}),
+                "verbose_log": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    def load(
+        self,
+        vae_name: str,
+        donor_device: str,
+        verbose_log: bool,
+    ) -> tuple:
+        """Загружает VAE и размещает на выбранном GPU."""
+        if folder_paths is None or torch is None:
+            raise RuntimeError(
+                "LTX2_MultiGPU_VAELoader требует ComfyUI runtime (folder_paths, torch)"
+            )
+
+        try:
+            from comfy import sd as comfy_sd  # type: ignore[import-not-found]
+            from comfy import model_management as mm  # type: ignore[import-not-found]
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"comfy.sd / model_management недоступны: {exc}"
+            ) from exc
+
+        # ── Разрешаем device ────────────────────────────────────────────
+        primary_dev = mm.get_torch_device()
+
+        # Определяем secondary (cuda:1 если есть, иначе primary)
+        if torch.cuda.is_available() and torch.cuda.device_count() >= 2:
+            idx = primary_dev.index if primary_dev.index is not None else 0
+            secondary_dev = torch.device("cuda", int((idx + 1) % torch.cuda.device_count()))
+        else:
+            secondary_dev = primary_dev
+
+        spec = (donor_device or "auto").strip().lower()
+        if spec == "auto":
+            target_dev = secondary_dev
+        elif spec == "cuda:0":
+            target_dev = primary_dev
+        elif spec == "cuda:1":
+            target_dev = secondary_dev
+        elif spec == "cpu":
+            target_dev = torch.device("cpu")
+        else:
+            try:
+                target_dev = torch.device(spec)
+            except Exception:  # noqa: BLE001
+                target_dev = secondary_dev
+
+        # ── Загружаем VAE ───────────────────────────────────────────────
+        vae_path = folder_paths.get_full_path("vae", vae_name)
+        if not vae_path:
+            raise FileNotFoundError(
+                f"VAE '{vae_name}' не найден в vae/"
+            )
+
+        try:
+            vae = comfy_sd.load_vae(vae_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"comfy.sd.load_vae failed для {vae_name!r}: {exc}"
+            ) from exc
+
+        if vae is None:
+            raise RuntimeError(
+                f"comfy.sd.load_vae вернул None для {vae_name!r}"
+            )
+
+        # ── Размещаем first_stage_model на целевом устройстве ───────────
+        # VAE объект в ComfyUI содержит .first_stage_model (nn.Module).
+        # Перемещаем его на target_dev для VAE Decode/Encode.
+        if hasattr(vae, "first_stage_model"):
+            try:
+                vae.first_stage_model.to(target_dev, non_blocking=False)
+            except Exception as exc:  # noqa: BLE001
+                if verbose_log:
+                    print(
+                        f"[ComfyUI-LTX2-MultiGPU] WARN: VAE first_stage_model.to({target_dev}) "
+                        f"failed: {exc}"
+                    )
+        elif hasattr(vae, "to"):
+            try:
+                vae.to(target_dev)
+            except Exception as exc:  # noqa: BLE001
+                if verbose_log:
+                    print(
+                        f"[ComfyUI-LTX2-MultiGPU] WARN: vae.to({target_dev}) failed: {exc}"
+                    )
+
+        if verbose_log:
+            try:
+                import os
+                vae_gb = os.path.getsize(vae_path) / (1024 ** 3)
+            except Exception:  # noqa: BLE001
+                vae_gb = 0.0
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] VAE loaded: {vae_name} "
+                f"({vae_gb:.2f} GB) @ {target_dev} (donor={donor_device!r})"
+            )
+
+        return (vae,)
+
+
 __all__ = [
     "LTX2_MultiGPU_HybridSplitLoader",
     "LTX2_MultiGPU_GemmaHybridLoader",
@@ -528,4 +672,5 @@ __all__ = [
     "LTX2_MultiGPU_DeviceStrategy",
     "LTX2_MultiGPU_VRAMParking",
     "LTX2_MultiGPU_SageAttention",
+    "LTX2_MultiGPU_VAELoader",
 ]
