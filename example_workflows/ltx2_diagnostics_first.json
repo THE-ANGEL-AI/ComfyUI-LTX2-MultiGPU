@@ -1,0 +1,209 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 12,
+  "version": "0.4.0",
+  "name": "LTX 2.3 Diagnostics-First Workflow",
+  "description": "Запустите этот workflow ПЕРВЫМ чтобы проверить поместится ли выбранный GGUF quant на ваших GPU. Не загружает модель — только читает GGUF header.",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LTX2_MultiGPU_MemoryDiagnostics",
+      "pos": [50, 50],
+      "size": [420, 140],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "report", "type": "STRING", "links": [1], "slot_index": 0}
+      ],
+      "properties": {
+        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
+        "cnr_id": "comfyui-ltx2-multigpu"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf",
+        "gemma-3-12b-it-FP4.safetensors",
+        true
+      ],
+      "title": "Memory Diagnostics — UD Q4_K_M"
+    },
+    {
+      "id": 2,
+      "type": "LTX2_MultiGPU_MemoryDiagnostics",
+      "pos": [50, 250],
+      "size": [420, 140],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "report", "type": "STRING", "links": [2], "slot_index": 0}
+      ],
+      "properties": {
+        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
+        "cnr_id": "comfyui-ltx2-multigpu"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled-1.1-UD-Q5_K_M.gguf",
+        "gemma-3-12b-it-FP4.safetensors",
+        true
+      ],
+      "title": "Memory Diagnostics — UD Q5_K_M"
+    },
+    {
+      "id": 3,
+      "type": "LTX2_MultiGPU_MemoryDiagnostics",
+      "pos": [50, 450],
+      "size": [420, 140],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "report", "type": "STRING", "links": [3], "slot_index": 0}
+      ],
+      "properties": {
+        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
+        "cnr_id": "comfyui-ltx2-multigpu"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled-1.1-UD-Q3_K_XL.gguf",
+        "gemma-3-12b-it-FP4.safetensors",
+        true
+      ],
+      "title": "Memory Diagnostics — UD Q3_K_XL (1xT4 fallback)"
+    },
+    {
+      "id": 4,
+      "type": "LTX2_MultiGPU_MemoryDiagnostics",
+      "pos": [50, 650],
+      "size": [420, 140],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "report", "type": "STRING", "links": [4], "slot_index": 0}
+      ],
+      "properties": {
+        "Node name for S&R": "LTX2_MultiGPU_MemoryDiagnostics",
+        "cnr_id": "comfyui-ltx2-multigpu"
+      },
+      "widgets_values": [
+        "ltx-2.3-22b-distilled-1.1-UD-Q6_K.gguf",
+        "gemma-3-12b-it-FP4.safetensors",
+        true
+      ],
+      "title": "Memory Diagnostics — UD Q6_K (вероятный OOM)"
+    },
+    {
+      "id": 5,
+      "type": "PreviewText",
+      "pos": [550, 50],
+      "size": [500, 300],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 1}
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewText"
+      },
+      "widgets_values": [],
+      "title": "Q4_K_M Report"
+    },
+    {
+      "id": 6,
+      "type": "PreviewText",
+      "pos": [550, 380],
+      "size": [500, 300],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 2}
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewText"
+      },
+      "widgets_values": [],
+      "title": "Q5_K_M Report"
+    },
+    {
+      "id": 7,
+      "type": "PreviewText",
+      "pos": [550, 710],
+      "size": [500, 300],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 3}
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewText"
+      },
+      "widgets_values": [],
+      "title": "Q3_K_XL Report"
+    },
+    {
+      "id": 8,
+      "type": "PreviewText",
+      "pos": [550, 1040],
+      "size": [500, 300],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 4}
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewText"
+      },
+      "widgets_values": [],
+      "title": "Q6_K Report (OOM?)"
+    },
+    {
+      "id": 9,
+      "type": "Note",
+      "pos": [50, 850],
+      "size": [500, 220],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "📊 Diagnostics-First Workflow\n\nЗапустите ЭТОТ workflow ПЕРВЫМ перед генерацией.\n\nЧто он делает:\n• Читает GGUF header (без загрузки модели!)\n• Считает реальный quant-размер (не fp16 × 2!)\n• Проецирует VRAM/RAM бюджет для каждой стратегии\n• Показывает: ✅ OK, ⚠️ Tight, ❌ OOM\n• Авто-предлагает лучшую стратегию\n\n📋 Все 4 quant-типа проверяются параллельно:\n• Q4_K_M → обычно Recommended на T4×2\n• Q5_K_M → качество, но tight на T4\n• Q3_K_XL → 1xT4 fallback\n• Q6_K → OOM warning\n\nВыберите quant по отчёту — и загружайте через HybridSplitLoader!"
+      ],
+      "title": "📋 Diagnostics Instructions"
+    }
+  ],
+  "links": [
+    {"id": 1, "origin_id": 1, "origin_slot": 0, "target_id": 5, "target_slot": 0, "type": "STRING"},
+    {"id": 2, "origin_id": 2, "origin_slot": 0, "target_id": 6, "target_slot": 0, "type": "STRING"},
+    {"id": 3, "origin_id": 3, "origin_slot": 0, "target_id": 7, "target_slot": 0, "type": "STRING"},
+    {"id": 4, "origin_id": 4, "origin_slot": 0, "target_id": 8, "target_slot": 0, "type": "STRING"}
+  ],
+  "groups": [
+    {"title": "Diagnostics — All 4 quant types", "bounding": [50, 50, 440, 770], "color": "#3f789e", "font_size": 18},
+    {"title": "Reports (PreviewText)", "bounding": [550, 50, 520, 1300], "color": "#3f789e", "font_size": 18}
+  ],
+  "config": {},
+  "extra": {
+    "comfyui_version": "0.4.0+",
+    "required_custom_nodes": [
+      "ComfyUI-LTX2-MultiGPU"
+    ],
+    "target_hardware": "Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM)",
+    "note": "НЕ загружает модель — только читает GGUF header. Безопасно при любом quant."
+  },
+  "widget_idx_map": {}
+}
