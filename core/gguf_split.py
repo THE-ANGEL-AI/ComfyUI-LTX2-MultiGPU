@@ -976,7 +976,7 @@ def load_gemma_hybrid(
             f"text_projection параметров на {primary_dev} (sample: {sample_names}{more}). "
             f"Проверьте свободную VRAM на primary и что donor_device != 'cpu' "
             f"для параметров проекции. Sampling с half-moved projection "
-            f"крешится с confusing 'device mismatch' на cuda:0."
+            f"крашится с confusing 'device mismatch' на cuda:0."
         )
     elif proj_move_failures and verbose:
         print(
