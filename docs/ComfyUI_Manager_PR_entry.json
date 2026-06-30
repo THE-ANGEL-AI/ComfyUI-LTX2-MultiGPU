@@ -2,8 +2,10 @@
   "_": "ComfyUI-Manager PR entry for ComfyUI-LTX2-MultiGPU",
   "_author": "THE-ANGEL-AI (The Angel Studio)",
   "_repo": "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU",
+  "_version": "0.3.0-pre",
+  "_nodes": 7,
   "_instructions": "Copy this object into custom-node-list.json in https://github.com/Comfy-Org/ComfyUI-Manager",
-  
+
   "author": "THE-ANGEL-AI",
   "title": "LTX-2 MultiGPU (Hybrid Split for 2×T4 / Kaggle)",
   "id": "comfyui-ltx2-multigpu",
@@ -12,7 +14,7 @@
     "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
   ],
   "install_type": "git-clone",
-  "description": "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2×T4 (Kaggle). Replaces DisTorch2 regex splitting with explicit block-aware sharding — distributes 44 DiT transformer blocks across 2 GPUs with forward-hook hidden-state transfer. 6 nodes: Разделитель модели (HybridSplitLoader), Загрузчик промптов (GemmaHybridLoader), Диагностика видеопамяти (MemoryDiagnostics), Переключатель стратегии (DeviceStrategy), Парковка видеопамяти (VRAMParking), Патч SageAttention (T4). Requires ComfyUI-GGUF (city96). Optimised for Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM). Unsloth Dynamic 2.0 GGUF compatible. MIT→GPL-3.0-or-later.",
+  "description": "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2×T4 (Kaggle). Replaces DisTorch2 regex splitting with explicit block-aware sharding — distributes 44 DiT transformer blocks across 2 GPUs with forward-hook hidden-state transfer. 7 nodes: 🔀 Splitter (HybridSplitLoader), 📝 Dual CLIP Loader (GemmaHybridLoader), 🩺 VRAM Diagnostics (MemoryDiagnostics), ⚙️ GPU Strategy Switch (DeviceStrategy), 🅿️ VRAM Parking (VRAMParking), ⚡ SageAttention T4 Turbo, 🖼️ VAE Loader with GPU select. Requires ComfyUI-GGUF (city96). Optimised for Kaggle T4×2 (2×14.5 GB VRAM, 29 GB RAM). Unsloth Dynamic 2.0 GGUF compatible. GPL-3.0-or-later.",
   "pip": [
     "gguf",
     "safetensors"
