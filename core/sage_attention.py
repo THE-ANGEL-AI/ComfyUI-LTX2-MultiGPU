@@ -20,11 +20,23 @@ __all__ = ["get_sageattn_patch", "is_sageattn_available"]
 
 
 def is_sageattn_available() -> bool:
-    """Проверяет, можно ли импортировать sageattn (без побочных эффектов)."""
+    """Проверяет, можно ли импортировать sageattn (без побочных эффектов).
+
+    BUG-4 fix: ловим не только ``ImportError`` (модуль отсутствует), но и
+    ``OSError`` (бинарный .so битый), ``RuntimeError`` (несовместимый
+    CUDA-тулчейн / Triton), и generic ``Exception`` (любые сторонние ошибки
+    в top-level коде sageattn). Раньше -- только ``ImportError`` → broken
+    install с RuntimeError при импорте крашил вызывающий node вместо
+    тихого fallback на стандартное внимание.
+    """
     try:
         import sageattn  # noqa: F401
         return True
-    except ImportError:
+    except (ImportError, OSError, RuntimeError):  # noqa: BLE001
+        return False
+    except Exception:  # noqa: BLE001
+        # Defensive: любые другие исключения (например загрузка .so кидает
+        # AttributeError из-за ABI-mismatch) — НЕ должны крашить node.
         return False
 
 
@@ -46,12 +58,23 @@ def get_sageattn_patch(verbose: bool = False) -> dict[str, Any]:
     """
     try:
         import sageattn  # noqa: F811 — ленивый импорт внутри функции
-    except ImportError:
+    except (ImportError, OSError, RuntimeError):  # noqa: BLE001
+        # BUG-4 fix: broaden catch (см. is_sageattn_available docstring).
+        # OSError — битый .so файл; RuntimeError — несовместимый
+        # CUDA/Triton при module-load (e.g. SM75 ветка на SM89+).
         print(
             "[ComfyUI-LTX2-MultiGPU] WARN: sageattn (SageAttention-SM75) "
-            "не установлен. Установите: pip install sageattn "
+            "не установлен или битый. Установите: pip install sageattn "
             "или клонируйте https://github.com/THE-ANGEL-AI/SageAttention-SM75\n"
             "  Стандартное внимание будет использовано (без ускорения)."
+        )
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        # Defensive: любые другие ошибки (ABI mismatch, missing global)
+        # не должны крашить node — WARN + пустой patch.
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] WARN: sageattn импорт неожиданно упал: "
+            f"{type(exc).__name__}: {exc}. Стандартное внимание будет использовано."
         )
         return {}
 

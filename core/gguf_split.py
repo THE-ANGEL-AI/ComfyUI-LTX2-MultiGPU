@@ -887,15 +887,25 @@ def load_gemma_hybrid(
         ) from exc
 
     # ── Шаг 2: получить file paths из ComfyUI folder_paths ───────────────────
+    # BUG-2 fix: encoder берём из text_encoders/ (стандарт для Gemma 3/4
+    # safetensors). Projection ИЩЕМ в text_encoders/ ПЕРВЫМ, fallback в clip/
+    # (для случаев когда projection лежит в clip/ — стандартный путь для
+    # city96/ComfyUI-GGUF). Раньше был хардкод только text_encoders — если
+    # юзер по проекту city96 клал projection в clip/, load_gemma_hybrid
+    # падал с FileNotFoundError несмотря на корректный dropdown вход.
     enc_path = folder_paths.get_full_path("text_encoders", encoder_name)
-    proj_path = folder_paths.get_full_path("text_encoders", projection_name)
+    proj_path = (
+        folder_paths.get_full_path("text_encoders", projection_name)
+        or folder_paths.get_full_path("clip", projection_name)
+    )
     if not enc_path:
         raise FileNotFoundError(
             f"Gemma encoder '{encoder_name}' не найден в text_encoders/"
         )
     if not proj_path:
         raise FileNotFoundError(
-            f"text_projection '{projection_name}' не найден в text_encoders/"
+            f"text_projection '{projection_name}' не найден ни в text_encoders/ "
+            f"ни в clip/"
         )
 
     # ── Шаг 3: build CLIP через comfy.sd.load_clip(ckpt_paths=[enc, proj]) ──

@@ -6,6 +6,10 @@
   R3 — НЕ хардкодить cuda:0/cuda:1; тянуть устройство из mm.get_torch_device()
   R4 — типы строго MODEL / CLIP / VAE / LATENT (FUNCTION возвращает tuple, длина ⇔ RETURN_TYPES)
   R5/R6 — уникальные префиксы в ключах (LTX2_MultiGPU_...), тяжёлые импорты в try/except
+
+REFACTOR: стратегии сплита ('blocks_50_50', 'blocks_30_70', ...) импортируются
+из core.gguf_split.STRATEGIES (single source of truth). Если в v0.х в будущем
+добавится стратегия — только core/, ноды переиспользуют автоматически.
 """
 
 from __future__ import annotations
@@ -24,21 +28,49 @@ except Exception:  # noqa: BLE001
     folder_paths = None  # type: ignore[assignment]
     _FOLDER_PATHS_OK = False
 
+# REFACTOR-1: единый список стратегий из core/gguf_split.py — single source
+# of truth. Если core добавляет/удаляет стратегию, ноды синхронизируются
+# автоматически (раньше дублировалось в HybridSplitLoader + DeviceStrategy).
+try:
+    from core.gguf_split import STRATEGIES as _STRATEGIES  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001
+    # Fallback: если core недоступен (например, при unit-тестах где core
+    # не подгружен) — держим те же 5 стратегий как literal, чтобы ComfyUI
+    # dropdown отрисовался корректно. core.STRATEGIES — канонический
+    # source; этот fallback — только для нестандартных окружений.
+    _STRATEGIES = (
+        "blocks_50_50",
+        "blocks_30_70",
+        "pipeline",
+        "single_cuda0",
+        "single_cuda1",
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Module-level helpers (FIX LOW #4: дедупликация _donor_choices)
 # ─────────────────────────────────────────────────────────────────────────────
 def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
-    """FIX LOW #4+#6+#LOW_cpu_machine: динамический donor_device-список.
+    """Динамический donor_device-список для ComfyUI-dropdown.
 
-    Использует torch.cuda.device_count() если torch доступен И CUDA активен;
-    на CPU-only машинах / torch=None fallback не показывает cuda:* опции
-    (юзер не должен видеть то, что упадёт с RuntimeError на load).
+    Поведение:
+      - ``auto`` — ВСЕГДА первая опция.
+      - ``cuda:0`` / ``cuda:1`` (и cuda:N для N>1) — добавляются ТОЛЬКО если
+        ``torch.cuda.is_available() == True``. На CPU-only машинах / при
+        torch=None — НЕ показываем cuda:* (юзер не должен видеть опции,
+        которые упадут с RuntimeError на load). Это контракт: документирован
+        в docstring v0.2.x, но в реализации был баг (cuda:0/cuda:1 добавлялись
+        безусловно); фикс ниже.
+      - ``cpu`` — только при ``include_cpu=True`` (Gemma / VAE; DiT — никогда).
 
     Args:
-        include_cpu: True для Gemma (encoder допускает CPU — он не
+        include_cpu: True для Gemma / VAE (encoder допускает CPU — он не
                       участвует в sampling-loop); False для DiT (DiT
                       не может жить на CPU во время KSampler-step).
+
+    Note:
+        Test ``tests/test_init.py::TestCudaDonorChoices`` дублирует контракт;
+        при изменении поведения — синхронизировать тест.
     """
     choices: list[str] = ["auto"]
     if torch is not None and torch.cuda.is_available():
@@ -48,11 +80,12 @@ def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
                 choices.append(f"cuda:{i}")
         except (RuntimeError, AssertionError):
             pass
-    # Базовые cuda:0/cuda:1 присутствуют ВСЕГДА — это не зависит от torch
-    # (сохраняет контракт исходного _DONOR_DEVICE_CHOICES_DIT).
-    for tag in ("cuda:0", "cuda:1"):
-        if tag not in choices:
-            choices.append(tag)
+        # Базовые cuda:0/cuda:1 присутствуют ТОЛЬКО когда CUDA активна —
+        # иначе на CPU-only машинах юзер видит опции которые гарантированно
+        # упадут в RuntimeError на load().
+        for tag in ("cuda:0", "cuda:1"):
+            if tag not in choices:
+                choices.append(tag)
     if include_cpu:
         choices.append("cpu")
     return choices
@@ -96,7 +129,12 @@ class LTX2_MultiGPU_HybridSplitLoader:
         # "(choices_tuple, )" = ComfyUI-формат для dropdown-виджета.
         if _FOLDER_PATHS_OK:
             try:
-                unet_choices: list = folder_paths.get_filename_list("diffusion_models")  # type: ignore[union-attr]
+                # BUG-1 fix: ``folder_paths.get_filename_list()`` может вернуть
+                # ``None`` вместо ``[]`` для пустой/несуществующей папки.
+                # ComfyUI-frontend тогда видит ``(None,)`` и либо крашится,
+                # либо показывает bare text input вместо dropdown. ``or []``
+                # гарантирует list.
+                unet_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 unet_choices = []
             unet_opts: tuple = (unet_choices,)
@@ -106,7 +144,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
             "required": {
                 "unet_name": unet_opts,
                 "split_strategy": (
-                    ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
+                    list(_STRATEGIES),  # REFACTOR-1: from core/gguf_split.STRATEGIES
                     {"default": "blocks_50_50"},
                 ),
                 # FIX LOW #4+#6: module-level dynamic donor_device.
@@ -192,11 +230,13 @@ class LTX2_MultiGPU_GemmaHybridLoader:
         # объединяем обе папки для encoder и projection.
         if _FOLDER_PATHS_OK:
             try:
-                enc_folder = folder_paths.get_filename_list("text_encoders")  # type: ignore[union-attr]
+                # BUG-1 fix (см. HybridSplitLoader): ``or []`` гарантирует list
+                # даже если folder_paths вернул ``None`` для несуществующей папки.
+                enc_folder = folder_paths.get_filename_list("text_encoders") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 enc_folder = []
             try:
-                clip_folder = folder_paths.get_filename_list("clip")  # type: ignore[union-attr]
+                clip_folder = folder_paths.get_filename_list("clip") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 clip_folder = []
             # Оба виджета видят файлы из обеих папок (как старый код через
@@ -265,15 +305,16 @@ class LTX2_MultiGPU_MemoryDiagnostics:
         # Gemma (.safetensors) может быть в text_encoders/ ИЛИ clip/.
         if _FOLDER_PATHS_OK:
             try:
-                unet_choices: list = folder_paths.get_filename_list("diffusion_models")  # type: ignore[union-attr]
+                # BUG-1 fix (см. HybridSplitLoader): ``or []`` для None-safety.
+                unet_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 unet_choices = []
             try:
-                gemma_enc = folder_paths.get_filename_list("text_encoders")  # type: ignore[union-attr]
+                gemma_enc = folder_paths.get_filename_list("text_encoders") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 gemma_enc = []
             try:
-                gemma_clip = folder_paths.get_filename_list("clip")  # type: ignore[union-attr]
+                gemma_clip = folder_paths.get_filename_list("clip") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 gemma_clip = []
             gemma_choices: list = list(dict.fromkeys(gemma_enc + gemma_clip))  # dedup
@@ -342,7 +383,7 @@ class LTX2_MultiGPU_DeviceStrategy:
             "required": {
                 "model": ("MODEL",),
                 "strategy": (
-                    ["blocks_50_50", "blocks_30_70", "pipeline", "single_cuda0", "single_cuda1"],
+                    list(_STRATEGIES),  # REFACTOR-1: from core/gguf_split.STRATEGIES
                     {"default": "blocks_50_50"},
                 ),
                 # NEW (v0.2.1): donor_device widget — раньше нода захардкодила
@@ -551,7 +592,8 @@ class LTX2_MultiGPU_VAELoader:
         # FIX dropdown-bug: всегда dropdown (даже пустой) если _FOLDER_PATHS_OK.
         if _FOLDER_PATHS_OK:
             try:
-                vae_choices: list = folder_paths.get_filename_list("vae")  # type: ignore[union-attr]
+                # BUG-1 fix (см. HybridSplitLoader): ``or []`` для None-safety.
+                vae_choices: list = folder_paths.get_filename_list("vae") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 vae_choices = []
             vae_opts: tuple = (vae_choices,)

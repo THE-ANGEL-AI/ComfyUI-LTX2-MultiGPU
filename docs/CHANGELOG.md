@@ -7,6 +7,28 @@
 
 ---
 
+## [v0.4.0-pre] — 2026-07-01 (Bugfix batch: loaders — GemmaHybridLoader folder fallback, CPU-only dropdown, None-safe file lists)
+
+### Fixed (исправления зависаний лоадеров)
+
+- **BUG-1 (CRITICAL, nodes.py)** — все 6 вызовов `folder_paths.get_filename_list(...)` обёрнуты в `... or []` для защиты от `None`-возврата от ComfyUI для пустых/несуществующих папок. Раньше — `TypeError: unsupported operand type(s) for +: 'NoneType' and 'NoneType'` в `enc_folder + clip_folder`, ломало dropdown rendering для GemmaHybridLoader, MemoryDiagnostics и HybridSplitLoader.
+- **BUG-2 (CRITICAL, core/gguf_split.py:load_gemma_hybrid)** — `projection_name` lookup теперь ищет в `text_encoders/` ПЕРВЫМ, fallback в `clip/` через `or` chain. Раньше — хардкод только `text_encoders` → `FileNotFoundError` если projection лежит в городском-city96 `clip/`-layout. Совмещает в `FileNotFoundError message` обе папки.
+- **BUG-3 (HIGH, nodes.py:_cuda_donor_choices)** — dropdown widget `donor_device` теперь скрывает `cuda:0`/`cuda:1` на CPU-only машинах. Раньше они добавлялись безусловно как baseline, что выглядело как рабочие опции, но падали с `RuntimeError` на load. Контракт соответствует docstring intent "юзер не должен видеть то, что упадёт с RuntimeError на load".
+- **BUG-4 (MEDIUM, core/sage_attention.py)** — `except ImportError` расширен до `except (ImportError, OSError, RuntimeError)` + defensive `except Exception` fallback с WARN. Broken sageattn install (бинарный .so битый / несовместимый CUDA-Triton) больше не крашит node.
+- **REFACTOR-1 (nodes.py:STRATEGIES import)** — dropdown стратегий теперь импортируется из `core/gguf_split.STRATEGIES` (single source of truth). Раньше strategy-list literal дублировался в HybridSplitLoader + DeviceStrategy (drift risk при добавлении новой стратегии в core). Safe-fallback tuple в `try: from core... except: ...` сохраняет работоспособность в standalone-окружениях (тесты, CLI).
+
+### Tests (added/regression coverage)
+
+- **tests/test_init.py::TestCudaDonorChoices** — обновлён: новый `_patch_torch_cm` через `@contextmanager`, добавлены тесты `test_cpu_only_no_cuda_in_choices`, `test_cuda_available_shows_cuda0_cuda1_baseline`, `test_cuda_available_with_more_gpus` (4-GPU case). Существующие `test_include_cpu_adds_cpu`, `test_dit_excludes_cpu` обновлены под mocking API.
+- **tests/test_gguf_split_gemma_hooks.py** — Block 4 `TestProjectionFolderFallback` (3 source-inspect теста для BUG-2 fix contract) + `test_runtime_falls_back_to_clip_when_text_encoders_empty` (DEFERRED — runtime mock-pipeline в 4-5x coverage scope, отложен в next batch).
+
+### Verified
+
+- `python -m py_compile __init__.py nodes.py core/...` — все 8 source-файлов ОК.
+- `python -m unittest tests.* -v` — **124 тестов**, 1 skipped (DEFERRED) — все ОК.
+
+---
+
 ## [v0.3.0-pre] — 2026-06-30 (Kaggle Edition: VRAM parking, SageAttention, VAE Loader, rebrand)
 
 ### Added (новые фичи)
