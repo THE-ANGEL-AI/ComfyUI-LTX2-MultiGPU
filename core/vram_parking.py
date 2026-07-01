@@ -91,6 +91,17 @@ def park_dit(patcher: Any) -> Any:
     # Убираем активные cross-device forward-хуки.
     _remove_stored_hooks(patcher)
 
+    # CRITICAL (v0.6.0-pre fix): _lock_inner_to_recursive (Round 3 / BUG-6) после
+    # hybrid_split_gguf навешивает _no_op_to_patch на КАЖДЫЙ submodule (включая
+    # каждый transformer_block). Без unlock блоки DiT silent no-op'нули бы
+    # при block.to(cpu). Waiting на sampler между KSampler-step не помогает —
+    # это явно user-action node, не sampler callback.
+    # Паттерн: unlock → move → re-lock (для sampler safety после парковки,
+    # если unpark не сработает — DiT остаётся запертым от sampler'а на CPU,
+    # вместо silent migrate на cuda:0 mid-sampling).
+    from core.gguf_split import _unlock_inner_to_recursive, _lock_inner_to_recursive
+    _unlock_inner_to_recursive(inner)
+
     # Перемещаем все блоки DiT на CPU (per-block, не inner.to('cpu')).
     # module-level .to() работает напрямую с nn.Module и не проходит
     # через запертый _lock_inner_to патч на top-level.
@@ -112,6 +123,13 @@ def park_dit(patcher: Any) -> Any:
 
     # Embed/head слои тоже на CPU.
     _move_modules_with_prefix(diffusion, cpu_dev, *EMBED_AND_HEAD_REL)
+
+    # Re-lock: теперь когда DiT на CPU, sampler не должен мочь его
+    # перетащить обратно на cuda:0 mid-VAE-decode (что занимает 5-10 сек
+    # и DiT не используется в этом диапазоне, но ComfyUI может попытаться
+    # blanket move). Тем более что device-cpu теперь — fallback на
+    # primary_gen = mm.get_torch_device() — без lock может мигрировать.
+    _lock_inner_to_recursive(inner)
 
     mm.soft_empty_cache()
     _set_parked(patcher, True)

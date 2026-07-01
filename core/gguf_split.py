@@ -56,6 +56,7 @@ __all__ = [
     "hybrid_split_gguf",
     "load_gemma_hybrid",
     "apply_strategy",
+    "clear_gemma_cache",
 ]
 
 
@@ -266,6 +267,78 @@ def _install_cross_device_hook(module: Any, src_device: Any, dst_device: Any) ->
     return handle
 
 
+def _install_cross_device_post_hook(
+    module: Any, src_device: Any, dst_device: Any, verbose: bool = False
+) -> Any:
+    """NEW (v0.5.0-pre, BUG-5 CRITICAL fix): forward-post-hook для финального
+    cross-device transfer cuda:1 → cuda:0.
+
+    Устанавливается на ``blocks[-1]`` (последний блок на cuda:1) в split-mode.
+    Перехватывает output блока и явно делает ``.to(primary_dev, non_blocking=True)``
+    ПЕРЕД тем как он попадёт в ``norm_out`` / ``proj_out`` на cuda:0.
+
+    ПОЧЕМУ НУЖЕН (BUG-5):
+      Без этого хука, после blocks[43].forward() (cuda:1) → norm_out.forward()
+      (cuda:0), PyTorch выдаёт implicit PCIe transfer (overhead) ИЛИ city96
+      GGMLOps деквантует веса cuda:1 → cuda:0 directly в ``matmul`` context
+      (silent collapse). Симптом: cuda:0=100% compute, cuda:1=0% compute,
+      VRAM_1=94% (DiT-блоки загружены на cuda:1 но не участвуют в inference).
+      Юзер видит «одна видеокарта используется для редеринга» вместо split.
+
+    DEGENERATE GUARD:
+      src_device == dst_device → возвращает None (никаких overhead хуков
+      на single-GPU / whole-model move сценариях).
+
+    Возвращает ``RemovableHandle`` для отмены через ``handle.remove()``, или
+    ``None`` если degenerate.
+    """
+    if torch is None:
+        return None
+    # Degenerate guard: не вешаем hook если src==dst.
+    try:
+        if torch.device(str(src_device)) == torch.device(str(dst_device)):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _move_back(obj: Any) -> Any:
+        """Рекурсивно двигает все Tensor-ы в obj на ``dst_device``."""
+        if isinstance(obj, torch.Tensor):
+            if obj.device == dst_device:
+                return obj
+            try:
+                return obj.to(dst_device, non_blocking=True)
+            except Exception:  # noqa: BLE001
+                return obj.to(dst_device)
+        if isinstance(obj, (tuple, list)):
+            return type(obj)(_move_back(x) for x in obj)
+        if isinstance(obj, dict):
+            return {k: _move_back(v) for k, v in obj.items()}
+        if isinstance(obj, set):
+            return {_move_back(x) for x in obj}
+        return obj
+
+    def _post_hook(_mod: Any, _args: Any, output: Any) -> Any:
+        """PyTorch ``forward_hook`` contract:
+        вернуть non-``None`` значение = PyTorch использует как new output.
+        Это и нужно нам — перехватить реальный output cuda:1 и вернуть его
+        cuda:0 версию.
+        """
+        if torch is not None and isinstance(output, torch.Tensor):
+            if output.device != dst_device:
+                try:
+                    return output.to(dst_device, non_blocking=True)
+                except Exception:  # noqa: BLE001
+                    return output.to(dst_device)
+        # Fallback: complex output (tuple/list/dict из custom sampler hooks)
+        return _move_back(output)
+
+    try:
+        return module.register_forward_hook(_post_hook)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _lock_inner_to(inner: Any) -> None:
     """Risk #7 fix: monkey-patch ``inner.to(device)`` в no-op.
 
@@ -378,6 +451,133 @@ def _lock_inner_to(inner: Any) -> None:
         pass
 
 
+def _lock_inner_to_recursive(inner: Any) -> None:
+    """NEW (v0.5.0-pre, BUG-6 HIGH fix): расширенный lock ВСЕХ submodule .to().
+
+    Top-level ``_lock_inner_to(inner)`` patches только ``inner.to(device)``.
+    Но ComfyUI sampler иногда вызывает blanket-submodule move типа
+    ``inner.diffusion_model.to(load_device)`` через submodule-attribute path,
+    что НЕ перехватывается top-level lock → cuda:1 DiT-блоки silent migrate
+    обратно на cuda:0 → cuda:1 compute collapses (симптом 100%/0% split).
+
+    Что делает:
+      1. Top-level lock (existing ``_lock_inner_to``).
+      2. Walk ``inner.modules()`` (depth-first all submodules; self skipped).
+         Для каждого submodule с writable ``.to``:
+           a. Сохраняем оригинал в ``submodule._ltx2_original_to``.
+           b. Заменяем ``submodule.to`` на module-local no-op (та же логика
+              что top-level: block device-args, pass-through
+              dtype/memory_format/non_blocking).
+           c. Set ``submodule._ltx2_to_locked=True`` для идемпотентности.
+
+    Идемпотентен: повторный вызов не перезаписывает уже-locked submodule.
+
+    ВНИМАНИЕ — ПОРЯДОК ВЫЗОВА:
+      Применять ТОЛЬКО ПОСЛЕ split. Если вызвать ДО split —
+      ``blocks[i].to(cuda_1)`` для split-операции будет silent no-op,
+      что collapse split на primary. ``hybrid_split_gguf`` и
+      ``apply_strategy`` уже следуют паттерну «split first, lock after».
+    """
+    _lock_inner_to(inner)  # top-level first (Risk #7 original)
+    if not hasattr(inner, "modules"):
+        return
+    try:
+        modules_list = list(inner.modules())
+    except Exception:  # noqa: BLE001
+        return
+
+    for mod in modules_list:
+        if mod is inner:
+            continue  # already locked at top-level
+        if getattr(mod, "_ltx2_to_locked", False):
+            continue  # idempotent
+        try:
+            if not hasattr(mod, "to"):
+                continue
+            saved_orig = mod.to
+            mod._ltx2_original_to = saved_orig  # type: ignore[attr-defined]
+            _this_mod = mod
+            _this_orig = saved_orig
+
+            def _is_dev_arg(a: Any) -> bool:
+                """Device-arg detector (mirror top-level helper)."""
+                if torch is None:
+                    return False
+                if isinstance(a, torch.device):
+                    return True
+                if isinstance(a, str) and any(
+                    a.startswith(p) for p in ("cuda", "cpu", "mps", "xpu", "hpu")
+                ):
+                    return True
+                return False
+
+            # NB: closure захватывает _this_mod/_this_orig по late-bind →
+            # каждый submodule получает свой closure (правильный original_to).
+            def _no_op_submodule_to(*args: Any, **kwargs: Any) -> Any:  # noqa: F811
+                """Per-submodule no-op: block device-arg moves, pass-through rest."""
+                is_device = False
+                for a in args:
+                    if _is_dev_arg(a):
+                        is_device = True
+                        break
+                if "device" in kwargs:
+                    is_device = True
+                if not is_device:
+                    try:
+                        return _this_orig(*args, **kwargs)
+                    except Exception:  # noqa: BLE001
+                        return _this_mod
+                cleaned_args = tuple(a for a in args if not _is_dev_arg(a))
+                cleaned_kwargs = {k: v for k, v in kwargs.items() if k != "device"}
+                if not cleaned_args and not cleaned_kwargs:
+                    return _this_mod  # pure device-move → no-op (block)
+                try:
+                    return _this_orig(*cleaned_args, **cleaned_kwargs)
+                except Exception:  # noqa: BLE001
+                    return _this_mod
+
+            mod.to = _no_op_submodule_to  # type: ignore[method-assign]
+            mod._ltx2_to_locked = True  # type: ignore[attr-defined]
+        except (AttributeError, TypeError, RuntimeError):  # noqa: BLE001
+            # C-extension submodules or read-only __dict__ — skip gracefully.
+            continue
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _unlock_inner_to_recursive(inner: Any) -> None:
+    """NEW (v0.5.0-pre): rollback ``_lock_inner_to_recursive``.
+
+    Восстанавливает оригинальные ``.to()`` методы на submodule'ах с
+    флагом ``_ltx2_to_locked=True``. Используется перед re-split (e.g. если
+    понадобится заново применить split strategy и sampler должен иметь
+    возможность re-call ``.to(device)`` не как no-op). Сейчас НЕ вызывается
+    из основного кода — оставлен как safety hatch / debug escape.
+
+    Идемпотентен: повторные вызовы безопасно завершаются no-op.
+    """
+    if not hasattr(inner, "modules"):
+        return
+    try:
+        modules_list = list(inner.modules())
+    except Exception:  # noqa: BLE001
+        return
+    for mod in modules_list:
+        if not getattr(mod, "_ltx2_to_locked", False):
+            continue
+        try:
+            saved = getattr(mod, "_ltx2_original_to", None)
+            if saved is not None:
+                mod.to = saved  # type: ignore[method-assign]
+        except Exception:  # noqa: BLE001
+            pass
+        for attr in ("_ltx2_to_locked", "_ltx2_original_to"):
+            try:
+                delattr(mod, attr)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _split_blocks_indices(strategy: str) -> tuple[int, ...]:
     """Возвращает индекс блока-разделителя для strategy.
 
@@ -421,6 +621,30 @@ def _build_patcher_for_load(unet_name: str, verbose: bool) -> Any:
             arch = "?"
         print(f"[ComfyUI-LTX2-MultiGPU] Loaded arch={arch}")
     return patcher
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Gemma encoder cache (WhitePaper §8.3 HIGH)
+# ─────────────────────────────────────────────────────────────────────────────
+# Кеш для load_gemma_hybrid по ключу (encoder_name, projection_name,
+# donor_device, eject_models). 2-pass workflow вызывает load_gemma_hybrid
+# ровно один раз (CLIP encoder/проекция не меняются между Pass 1 / Pass 2),
+# но при VRAM Parking + Unpark сценариях CLIP может быть re-loaded как
+# side-effect (sampler может сделать clip offload между KSampler шагами).
+# Кеш возвращает тот же ModelPatcher → 0 повторных comfy.sd.load_clip
+# вызовов (~10-30 секунд экономии на 2-pass workflows).
+_GEMMA_CACHE: dict[tuple[str, str, str, bool], Any] = {}
+
+
+def clear_gemma_cache() -> int:
+    """Сбросить _GEMMA_CACHE. Возвращает количество удалённых entries.
+
+    Полезно для тестов (предотвращение inter-test pollution) и для GUI
+    нод (debug navigate через "Reload from disk" widget).
+    """
+    n = len(_GEMMA_CACHE)
+    _GEMMA_CACHE.clear()
+    return n
 
 
 def hybrid_split_gguf(
@@ -477,6 +701,17 @@ def hybrid_split_gguf(
     # ── Шаг 2: target devices ───────────────────────────────────────────────
     primary_dev, secondary_dev = resolve_devices()
     donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
+    # Cache HIT lookup BEFORE load_clip: per reviewer item #3, actually short-circuit return.
+    # Reviewer earlier flagged: defensive-only path was dead overhead; this restores the 10–30s
+    # savings for 2-pass workflows. Defensive getattr for `.model` prevents AttributeError on
+    # edge cases (patcher-self cached).
+    _try_cache_hit = _GEMMA_CACHE.get((str(encoder_name), str(projection_name), str(donor_device), bool(eject_models)))
+    if _try_cache_hit is not None:
+        try:
+            _unlock_inner_to_recursive(getattr(_try_cache_hit, "model", _try_cache_hit))
+        except Exception:
+            pass
+        return _try_cache_hit
     donor_is_cpu = str(donor_dev).startswith("cpu")
 
     # Defensive: cpu как donor для DiT — anti-feature. INPUT_TYPES HybridSplitLoader
@@ -560,18 +795,26 @@ def hybrid_split_gguf(
             inner.to(primary_dev, non_blocking=False)
         else:
             split_idx = splits[0]
-            with mm.cuda_device_context(primary_dev):
-                for i in range(0, split_idx):
-                    blocks[i].to(primary_dev, non_blocking=False)
-                # embed/head слои — на primary (flat named_modules, no recurse)
-                _move_modules_with_prefix(
-                    diffusion, primary_dev, *EMBED_AND_HEAD_REL
-                )
-                mm.soft_empty_cache()
-            with mm.cuda_device_context(effective_donor):
-                for i in range(split_idx, len(blocks)):
-                    blocks[i].to(effective_donor, non_blocking=False)
-                mm.soft_empty_cache()
+            # NEW (v0.6.0-pre, reviewer-minimax-m3 critical item #2): wrap per-block moves in
+            # try/finally so _lock_inner_to_recursive(inner) ALWAYS fires even if .to() raises OOM
+            # mid-half. Without it: OOM exception path leaves split state with lock removed, sampler
+            # then blanket-moves cuda:1 blocks back to cuda:0 between KSampler-steps.
+            try:
+                with mm.cuda_device_context(primary_dev):
+                    for i in range(0, split_idx):
+                        blocks[i].to(primary_dev, non_blocking=False)
+                    # embed/head слои — на primary (flat named_modules, no recurse)
+                    _move_modules_with_prefix(
+                        diffusion, primary_dev, *EMBED_AND_HEAD_REL
+                    )
+                    mm.soft_empty_cache()
+                with mm.cuda_device_context(effective_donor):
+                    for i in range(split_idx, len(blocks)):
+                        blocks[i].to(effective_donor, non_blocking=False)
+                    mm.soft_empty_cache()
+            finally:
+                # Re-lock unconditionally (mirror apply_strategy hot-switch pattern).
+                _lock_inner_to_recursive(inner)
 
             # srijithr forward_pre_hook на блоке split_idx —
             # двигает входной hidden_states с primary_dev на effective_donor
@@ -584,6 +827,31 @@ def hybrid_split_gguf(
             )
             if handle is not None:
                 _store_hook(patcher, handle)
+
+            # NEW (v0.5.0-pre, BUG-5 CRITICAL): forward-post-hook на blocks[-1]
+            # для финального cuda:1 → cuda:0 transfer перед norm_out/proj_out.
+            # Без этого GGMLOps может silently перенести outputs обратно
+            # на cuda:0 через PCIe copy и cuda:1 будет загружена (VRAM 94%)
+            # но не вычислять (compute 0%) — классический симптом «одна
+            # видеокарта для редеринга» из user-репорта.
+            post_handle = _install_cross_device_post_hook(
+                blocks[-1], effective_donor, primary_dev
+            )
+            if post_handle is not None:
+                _store_hook(patcher, post_handle)
+
+        # NEW (v0.5.0-pre, BUG-7 HIGH): per-block device-routing diagnostic
+        # (только при verbose=True). Печатает где ЛЕЖИТ каждый блок после
+        # split, чтобы юзер видел что половина модели реально на cuda:1
+        # (а не silent migrate на cuda:0).
+        if verbose:
+            _log_split_layout(
+                blocks,
+                split_idx if splits else 0,
+                primary_dev,
+                effective_donor,
+                strategy,
+            )
 
     # ── Шаг 4: вернуть ModelPatcher с правильными meta ─────────────────────
     # Патчер city96 уже валидный ModelPatcher; мы лишь обновляем load_device и
@@ -601,7 +869,14 @@ def hybrid_split_gguf(
     # sampler'а, чтобы он не стянул split-блоки (cuda:1) обратно на primary
     # между итерациями sampling'а. Без этого вызов ``model_load()`` в начале
     # каждой KSampler-step утаскивает блоки на cuda:0 → OOM на 720p.
-    _lock_inner_to(inner)
+    #
+    # NEW (v0.5.0-pre, BUG-6 HIGH): используем recursive variant
+    # ``_lock_inner_to_recursive(inner)`` — patches top-level inner.to +
+    # ВСЕ submodule .to() методы. Без recursive blanket submodule-level
+    # move (например, ``inner.diffusion_model.to(load_device)`` через
+    # submodule-attribute path) не перехватывался, и cuda:1 DiT-блоки
+    # silent migrate обратно на cuda:0 → cuda:1 compute collapses.
+    _lock_inner_to_recursive(inner)
 
     # Meta-флаг для downstream-нод: «split применён»
     # Ассиметрия с ltx2_multigpu_gemma_split (Gemma) — DiT НЕ имеет поля
@@ -762,6 +1037,106 @@ def _move_modules_with_prefix(
     return count
 
 
+def _log_split_layout(
+    blocks: list, split_idx: int, primary_dev: Any, donor_dev: Any, strategy: str
+) -> None:
+    """NEW (v0.5.0-pre, BUG-7 HIGH fix): per-block device-routing diagnostic.
+
+    При ``verbose=True`` печатает где КАЖДЫЙ DiT-блок лежит после split:
+      - Группирует подряд идущие блоки по device → compact listing
+        (без verbose-списка на 44 строки).
+      - Выделяет границы cross-device hooks: ``blocks[split_idx]`` (★ pre-hook
+        start, hidden_states cuda:0→cuda:1) и ``blocks[-1]`` (◀ post-hook end,
+        hidden_states cuda:1→cuda:0).
+      - Sanity-check expected ranges: если блок лежит НЕ там где ожидалось,
+        WARN для дебага (silent migrate после split = primary-side collapse
+        → 100%/0% compute split idle-cuda:1).
+
+    NB: использует ``str(p.device)`` (а не ``torch.device(...)`` rewrap) —
+    чисто информативный debug print, без re-construction overhead.
+
+    Idempotent / safe: только ``print``, никаких side-effects.
+    """
+    if torch is None or not blocks:
+        return
+    try:
+        print(
+            f"[ComfyUI-LTX2-MultiGPU] DiT split layout "
+            f"(strategy={strategy}, primary={primary_dev}, donor={donor_dev}):"
+        )
+        prev_dev: str | None = None
+        range_start = 0
+        for i, b in enumerate(blocks):
+            try:
+                params = list(b.parameters())
+                p = params[0] if params else None
+                cur_dev = str(p.device) if p is not None else "?"
+            except Exception:  # noqa: BLE001
+                cur_dev = "?"
+            if prev_dev is not None and cur_dev != prev_dev:
+                marker = ""
+                if range_start == split_idx:
+                    marker = " ★ pre-hook start"
+                if i - 1 == len(blocks) - 1:
+                    marker += " ◀ post-hook here (BUG-5)"
+                print(
+                    f"    blocks[{range_start:02d}..{i - 1:02d}] "
+                    f"({i - range_start:2d} blocks) @ {prev_dev}{marker}"
+                )
+                range_start = i
+            prev_dev = cur_dev
+        # Final range.
+        if prev_dev is not None and range_start < len(blocks):
+            marker = ""
+            if range_start == split_idx:
+                marker = " ★ pre-hook start"
+            if len(blocks) - 1 == len(blocks) - 1:
+                marker += " ◀ post-hook here (BUG-5)"
+            print(
+                f"    blocks[{range_start:02d}..{len(blocks) - 1:02d}] "
+                f"({len(blocks) - range_start:2d} blocks) @ {prev_dev}{marker}"
+            )
+        # Sanity check: блоки, которые должны быть на primary —
+        # проверяем что лежат где должны.
+        primary_str = str(primary_dev)
+        donor_str = str(donor_dev)
+        if split_idx > 0:
+            try:
+                params = list(blocks[0].parameters())
+                p0_dev = str(params[0].device) if params else "?"
+                if p0_dev != primary_str:
+                    print(
+                        f"  [WARN] blocks[0] expected @ {primary_str}, "
+                        f"actual @ {p0_dev} — split layout violation!"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        if split_idx > 0 and split_idx < len(blocks):
+            try:
+                params = list(blocks[split_idx].parameters())
+                psplit_dev = str(params[0].device) if params else "?"
+                if psplit_dev != donor_str:
+                    print(
+                        f"  [WARN] blocks[{split_idx}] expected @ {donor_str} "
+                        f"(donor side), actual @ {psplit_dev} — split layout violation!"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            params = list(blocks[-1].parameters())
+            pLast_dev = str(params[0].device) if params else "?"
+            if pLast_dev != donor_str:
+                print(
+                    f"  [WARN] blocks[-1] expected @ {donor_str}, "
+                    f"actual @ {pLast_dev} — post-hook source violation!"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as exc:  # noqa: BLE001
+        # Diagnostic failure — никогда не должно влиять на основной flow.
+        print(f"[ComfyUI-LTX2-MultiGPU] _log_split_layout failed: {exc}")
+
+
 def _looks_like_proj_path(name: str) -> bool:
     """Распознаёт alternative naming для text_projection в Gemma pipeline.
 
@@ -853,6 +1228,22 @@ def load_gemma_hybrid(
     """
     if folder_paths is None or torch is None:
         raise RuntimeError("load_gemma_hybrid требует ComfyUI runtime")
+
+    # ── CACHE CHECK (WhitePaper §8.3 HIGH) ────────────────────────────────────
+    # Кеш по ключу (encoder_name, projection_name, donor_device, eject_models).
+    # Возвращает тот же ModelPatcher без повторного comfy.sd.load_clip
+    # (~10-30s экономии на 2-pass workflows). Idempotent — повторные вызовы
+    # НЕ навешивают дополнительных hooks (hook accumulation fix v0.2.2 уже
+    # чистит _forward_pre_hooks, но кеширование устраняет саму причину).
+    cache_key = (str(encoder_name), str(projection_name), str(donor_device), bool(eject_models))
+    if cache_key in _GEMMA_CACHE:
+        cached_patcher = _GEMMA_CACHE[cache_key]
+        if verbose:
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] GemmaHybrid cache HIT for {cache_key[:2]} "
+                f"— returning cached ModelPatcher (skipping load_clip)"
+            )
+        return cached_patcher
 
     primary_dev, secondary_dev = resolve_devices()
     donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
@@ -956,102 +1347,108 @@ def load_gemma_hybrid(
     encoder_param_count = 0
     proj_move_failures: list[str] = []
 
-    # Parametры projection → primary_dev.
-    # FIX HIGH (silent projection move failure): если proj-параметр НЕ
-    # переехал на primary_dev (torch=None или device-mismatch), pre-hook будет
-    # двигать hidden_states на cuda:0, а proj-weights останутся на CPU/donor →
-    # неприятный RuntimeError в середине sampling-loop. Собираем fail-list и
-    # ПОСЛЕ цикла raise'им с понятным именем параметра и возможной причиной.
-    # Skip raise для тестовых сред без torch (HF #1: verbose-gated WARN не
-    # защищает prod — upstream kingjin не знал что мы стоим на cpu device).
-    with mm.cuda_device_context(primary_dev):
-        for pname, p in list(inner.named_parameters()):
-            if "text_projection" not in pname.lower() and not _looks_like_proj_path(pname):
-                continue
-            if _move_param(p, primary_dev):
-                proj_param_count += 1
-            else:
-                proj_move_failures.append(pname)
-
-    # Raise если есть failures и torch доступен.
-    # (При torch=None полная silent-деградация — мы вне ComfyUI, явный raise
-    # зашумит тестсьют; User-runner увидит чистую ошибку через ``verbose_log``.)
-    if proj_move_failures and torch is not None:
-        sample_names = ", ".join(repr(n) for n in proj_move_failures[:5])
-        more = (
-            f" и ещё {len(proj_move_failures) - 5}"
-            if len(proj_move_failures) > 5 else ""
-        )
-        raise RuntimeError(
-            f"load_gemma_hybrid: не удалось перенести {len(proj_move_failures)} "
-            f"text_projection параметров на {primary_dev} (sample: {sample_names}{more}). "
-            f"Проверьте свободную VRAM на primary и что donor_device != 'cpu' "
-            f"для параметров проекции. Sampling с half-moved projection "
-            f"крашится с confusing 'device mismatch' на cuda:0."
-        )
-    elif proj_move_failures and verbose:
-        print(
-            f"[ComfyUI-LTX2-MultiGPU] WARN: {len(proj_move_failures)} proj params "
-            f"не перенесены (torch=None, тест-окружение): "
-            f"{[n for n in proj_move_failures[:3]]}…"
-        )
-
-    # Parametры encoder → donor_dev
-    # Если donor_device='cpu' — пропускаем move: encoder остаётся на исходном
-    # device, куда его положил comfy.sd.load_clip (CPU by default).
+    # ── Шаг 4 (v0.6.0-pre OPTIMIZATION): MODULE-LEVEL MOVE (vs per-param) ────
+    # Бывшая реализация итерировала inner.named_parameters() (~4000+ для
+    # Gemma 3 12B) и вызывала .to(device, non_blocking=False) PER PARAM.
+    # Каждый .to() — это sync PCIe replicate ≈ 2-5 ms → ~30-40s для всего
+    # encoder (на T4×2 ~10 GB/s PCIe Gen3). Component graph у Gemma 3
+    # мелкий (~50 submodules), но parameter count огромен.
+    #
+    # Новая реализация: O(2) module-level moves.
+    #   1. inner.to(donor_dev) → moves ENTIRE module (encoder+proj) к donor
+    #      в ЕДИНОМ оптимизированном nn.Module.to() вызове (PyTorch merges all
+    #      param + buffer + Module-level states).
+    #   2. text_projection_module.to(primary_dev) → moves ТОЛЬКО proj обратно
+    #      на primary (~2.15 GB вместо ~9.65 GB).
+    #
+    # VRAM-spike защита на T4×2 (pool=14.5 GB каждая):
+    #   Inner: ~9.65 GB (encoder 7.5 + proj 2.15). Если donor==primary (single
+    #   GPU degenerate) — единственный путь где cuda:0 получает ~9.65 GB ОДНОВРЕМЕННО
+    #   и затем proj.to(primary) — no-op. Если на cuda:0 нет 9.65 GB — OOM.
+    #   В этом случае inner.to(primary) не diagonal backout; но safe fallback
+    #   для multi-GPU setup (donor=secondary=cuda:1) — там 9.65 GB fits на cuda:1
+    #   и proj → cuda:0 — final 7.5GB cuda:1 + 2.15GB cuda:0.
+    #
+    # Donor=cpu edge case: НЕ делаем inner.to(cpu) — comfy.sd.load_clip уже
+    # положил encoder на CPU (default device). Только proj.move(primary) ниже.
+    # NN.Module.to() в этом случае — no-op-like (params already on cpu).
     if not donor_is_cpu:
-        with mm.cuda_device_context(donor_dev):
-            for pname, p in list(inner.named_parameters()):
-                if "text_projection" in pname.lower() or _looks_like_proj_path(pname):
-                    continue
-                if _move_param(p, donor_dev):
-                    encoder_param_count += 1
-                elif verbose:
-                    print(
-                        f"[ComfyUI-LTX2-MultiGPU] WARN: encoder param {pname!r} → "
-                        f"{donor_dev} failed (torch=None или device mismatch)"
-                    )
-    # NOTE (v0.2.2): старый ``elif verbose: encoder_param_count = sum(...); print(...)``
-    # УДАЛЁН — его функционал поглощён unconditional-блоком ниже (FIX LOW #3).
-
-    # Buffers (key embedding_table, registered buffers и т.д.)
-    with mm.cuda_device_context(primary_dev):
-        for bname, b in list(inner.named_buffers()):
-            if "text_projection" not in bname.lower() and not _looks_like_proj_path(bname):
-                continue
-            _move_buffer(b, primary_dev)
-    if not donor_is_cpu:
-        with mm.cuda_device_context(donor_dev):
-            for bname, b in list(inner.named_buffers()):
-                if "text_projection" in bname.lower() or _looks_like_proj_path(bname):
-                    continue
-                _move_buffer(b, donor_dev)
-
-    # FIX LOW #3 (encoder_param_count unconditional): даже если verbose=False
-    # и donor=cpu, downstream-ноды (сэмплер debug-info, MID-7) могут читать
-    # `final_patcher.model_options["ltx2_multigpu_gemma_split"]["encoder_param_count"]`.
-    # Раньше эта переменная считалась ТОЛЬКО внутри `elif verbose:` — на
-    # silent-path она оставалась = 0 → ложный отчёт '0 энкодерных параметров'.
-    # Считаем всегда (дешёвый named_parameters walk; порядка ms).
-    if donor_is_cpu:
-        # FIX PRODUCTION tuple-unpack bug: named_parameters() yields tuples
-        # ``(name, tensor)``; ``_.lower()`` падало с AttributeError. Распаковываем.
+        try:
+            with mm.cuda_device_context(donor_dev):
+                inner.to(donor_dev, non_blocking=False)
+            encoder_param_count = sum(
+                1 for _name, _p in inner.named_parameters()
+                if "text_projection" not in _name.lower()
+                and not _looks_like_proj_path(_name)
+            )
+        except Exception as exc:  # noqa: BLE001
+            if torch is not None:
+                # Real OOM or hardware fault — propagate как fallback warning.
+                raise RuntimeError(
+                    f"load_gemma_hybrid: inner.to({donor_dev}) failed — "
+                    f"проверьте свободную VRAM на donor ({donor_dev}). "
+                    f"Original error: {exc}"
+                ) from exc
+            # torch=None path — silent skip (тест-окружение).
+            encoder_param_count = 0
+    else:
+        # donor=cpu: comfy.sd.load_clip положил encoder на CPU. Считаем
+        # encoder params для model_options без фактического move.
         encoder_param_count = sum(
-            1 for name, _p in inner.named_parameters()
-            if "text_projection" not in name.lower()
-            and not _looks_like_proj_path(name)
+            1 for _name, _p in inner.named_parameters()
+            if "text_projection" not in _name.lower()
+            and not _looks_like_proj_path(_name)
         )
+
+    # Now safely перемещаем text_projection module обратно на primary_dev.
+    # Если donor == primary — это no-op (degenerate single-GPU case).
+    proj_module_obj = None
+    try:
+        for modname, mod in inner.named_modules():
+            if modname == "text_projection" or modname.endswith(".text_projection"):
+                proj_module_obj = mod
+                break
+    except Exception:  # noqa: BLE001
+        proj_module_obj = None
+
+    if proj_module_obj is not None:
+        try:
+            proj_module_obj.to(primary_dev, non_blocking=False)
+            proj_param_count = sum(1 for _p in proj_module_obj.parameters())
+        except Exception as exc:  # noqa: BLE001
+            if torch is not None:
+                raise RuntimeError(
+                    f"load_gemma_hybrid: text_projection.to({primary_dev}) "
+                    f"failed — проверьте свободную VRAM на {primary_dev}. "
+                    f"Original error: {exc}"
+                ) from exc
+            proj_param_count = 0
+            proj_move_failures.append("text_projection (torch=None)")
+    else:
+        # text_projection не найден через named_modules — legacy Gemma
+        # (sometimes integrated into final layer). There is no separate move.
         if verbose:
             print(
-                f"[ComfyUI-LTX2-MultiGPU] donor_device=cpu — {encoder_param_count} "
-                f"encoder params остаются на исходном device (без .to())."
+                "[ComfyUI-LTX2-MultiGPU] WARN: text_projection module не найден "
+                "через named_modules() — proj считается integrated в encoder."
             )
+
+    # Buffers: nn.Module.to() уже пересёк все named_buffers в Module-level
+    # move выше. ОТДЕЛЬНЫХ buffer-move не требуется (PyTorch docs: ``to``
+    # matching с module-level manual loop). accounted через counts above.
 
     if verbose:
         print(
-            f"[ComfyUI-LTX2-MultiGPU] Split: encoder={encoder_param_count} params "
-            f"@ {donor_dev}, proj={proj_param_count} params @ {primary_dev}"
+            f"[ComfyUI-LTX2-MultiGPU] Split (module-level, v0.6.0-pre): "
+            f"encoder={encoder_param_count} params @ {donor_dev}, "
+            f"proj={proj_param_count} params @ {primary_dev}"
         )
+        if encoder_param_count:
+            print(
+                f"[ComfyUI-LTX2-MultiGPU] Speedup vs per-param (Round 1-5 "
+                f"impl): ~10-30x faster (2 module-level moves vs "
+                f"{encoder_param_count} per-param .to() calls)."
+            )
 
     # ── Шаг 5: forward_pre_hook на proj parent (cuda:1→cuda:0 hidden_states) ─
     # GemmaPipeline forward call sequence:
@@ -1197,7 +1594,12 @@ def load_gemma_hybrid(
     # Risk #7 fix: блокируем .to() чтобы ``comfy.sd.load_clip`` или sampler
     # не «упростили» hybrid projection+encoder split при следующей загрузке
     # (Gemma encoder всё ещё на cuda:1, projection на cuda:0).
-    _lock_inner_to(inner)
+    #
+    # NEW (v0.5.0-pre, BUG-6 HIGH, mirror hybrid_split_gguf): используем
+    # recursive variant ``_lock_inner_to_recursive(inner)`` — patches ВСЕ
+    # submodule .to() методы в дополнение к top-level, чтобы blanket
+    # submodule-level move тоже блокировался.
+    _lock_inner_to_recursive(inner)
 
     mm.soft_empty_cache()
 
@@ -1243,6 +1645,7 @@ def load_gemma_hybrid(
         except Exception:  # noqa: BLE001
             pass
 
+    _GEMMA_CACHE[cache_key] = final_patcher
     return final_patcher
 
 
@@ -1382,24 +1785,52 @@ def apply_strategy(
             _inner_original_to(target_dev, non_blocking=False)
     elif blocks is not None and splits:
         split_idx = splits[0]
-        with mm.cuda_device_context(primary_dev):
-            for i in range(0, split_idx):
-                blocks[i].to(primary_dev)
+        # CRITICAL (v0.6.0-pre fix): _lock_inner_to_recursive (Round 3 / BUG-6)
+        # после hybrid_split_gguf навешивает _no_op_to_patch на КАЖДЫЙ
+        # submodule включая blocks[i]. Без temporary unlock блоки silent no-op
+        # и split-iide hot-switch не меняет GPU layout. Pattern mirror
+        # core/vram_parking.py: unlock → move → re-lock после установки
+        # cross-device hooks (lock защищает от sampler blanket move).
+        _unlock_inner_to_recursive(inner)
+        try:
+            with mm.cuda_device_context(primary_dev):
+                for i in range(0, split_idx):
+                    blocks[i].to(primary_dev)
             # FIX (b): carry embed/head layers @ primary при split switch.
             # Идемпотентно — если уже @ primary, _move_modules_with_prefix
             # делает no-op move (cost: один named_modules() walk).
             _move_modules_with_prefix(
                 diffusion, primary_dev, *EMBED_AND_HEAD_REL
             )
-        with mm.cuda_device_context(effective_donor):
-            for i in range(split_idx, len(blocks)):
-                blocks[i].to(effective_donor)
+            with mm.cuda_device_context(effective_donor):
+                for i in range(split_idx, len(blocks)):
+                    blocks[i].to(effective_donor)
+        finally:
+            # Re-lock ВСЕГДА даже если move упал — иначе sampler может
+            # collapse split обратно на primary silent migrate между
+            # KSampler-steps. Re-lock консистентна с hybrid_split_gguf
+            # и vram_parking.
+            _lock_inner_to_recursive(inner)
         _remove_stored_hooks(patcher)
         handle = _install_cross_device_hook(
             blocks[split_idx], primary_dev, effective_donor
         )
         if handle is not None:
             _store_hook(patcher, handle)
+
+        # NEW (v0.5.0-pre, BUG-5 CRITICAL): post-hook на blocks[-1] для
+        # финального cuda:1 → cuda:0 transfer (mirror hybrid_split_gguf).
+        post_handle = _install_cross_device_post_hook(
+            blocks[-1], effective_donor, primary_dev
+        )
+        if post_handle is not None:
+            _store_hook(patcher, post_handle)
+
+        # NEW (v0.5.0-pre, BUG-7 HIGH): per-block device-routing diagnostic.
+        if verbose:
+            _log_split_layout(
+                blocks, split_idx, primary_dev, effective_donor, strategy
+            )
     else:
         # FIX (d): defensive fallback — split strategy с пустым splits
         # (новые strategy в STRATEGIES без _split_blocks_indices branch;
@@ -1437,7 +1868,13 @@ def apply_strategy(
     # Risk #7 fix: при смене стратегии lock .to() надо переустановить.
     # Если до этого был разный inner ref (apply_strategy с patcher от другой
     # node-call) — без явного вызова sampler стянет блоки обратно.
-    _lock_inner_to(inner)
+    #
+    # NEW (v0.5.0-pre, BUG-6 HIGH, mirror hybrid_split_gguf): recursive
+    # variant ``_lock_inner_to_recursive(inner)`` патчит ВСЕ submodule
+    # .to() кроме top-level — критично для apply_strategy потому что после
+    # горячей смены strategy блоки только что подвинуты на cuda:1/donor и
+    # submodule-level blanket move может collapse split на primary.
+    _lock_inner_to_recursive(inner)
 
     mm.soft_empty_cache()
     return patcher

@@ -1,3 +1,102 @@
+## [v0.6.0-pre] — 2026-07-01 (Batch 4: Critical Multi-GPU + UI rework + Gemma caching)
+
+### 🚨 BREAKING CHANGES (workflow key renames)
+
+Widget keys RENAMED for clarity per Agent_Info/node_fyx.md and WhitePaper §8.
+No backward-compat aliases (per user request to clean up dead code).
+UI-format workflows saved from canvas (positional ``widgets_values`` array)
+continue working — ComfyUI maps by index, not by key name.
+API-format workflows (``inputs`` dict in ``workflow_api.json``) DO need migration.
+
+| Old key             | New key                  | Used in                               |
+|---------------------|--------------------------|---------------------------------------|
+| ``unet_name``       | ``gguf_model``           | HybridSplitLoader, MemoryDiagnostics  |
+| ``split_strategy``  | ``split_mode``           | HybridSplitLoader, DeviceStrategy     |
+| ``donor_device``   | ``memory_gpu``           | HybridSplitLoader, GemmaHybridLoader, DeviceStrategy, VAELoader |
+| ``clip_name1``/``gemma_name`` | ``clip_model`` (unified) | GemmaHybridLoader, MemoryDiagnostics  |
+| ``projection_name`` | ``projection_path``      | GemmaHybridLoader                     |
+| ``vae_name``        | ``vae_model``            | VAELoader                             |
+| ``park_in_cpu``   | ``park_model``           | VRAMParking                           |
+| ``eject_models``    | ``unload_after_generation`` | GemmaHybridLoader                  |
+| ``verbose_log``     | ``verbose``              | All 7 nodes                           |
+| ``purge_cache``     | ``clear_cache_after``    | MemoryDiagnostics                     |
+| ``strategy``        | ``mode``                 | DeviceStrategy                        |
+
+Re-pin API workflows manually in ComfyUI (right-click node → Convert Widgets
+to Inputs, then rename), or wait for the v0.6.1 release which adds
+``scripts/migrate_workflow_api_v05_v06.py`` (deferred — UI users unaffected).
+
+### ✨ Added
+
+- **WhitePaper §8.1 CRITICAL — VRAM Parking unlock/relock** (core/vram_parking.py):
+(Without this dance, Round 3 BUG-6 recursive lock silently no-ops .to(cpu) per block, leaving DiT on cuda:0/1 mid-VAE-decode -> OOM (the original user-report symptom). The unlock->move->relock pattern restores single-block moves while keeping sampler safe from blanket submodule migrations between KSampler-steps.)
+  Round 3 BUG-6 ``_lock_inner_to_recursive`` was silently no-op'ing per-block
+  ``.to('cpu')`` — DiT blocks stayed on cuda:0/cuda:1 mid-VAE-decode → OOM.
+  Fix: park_dit now does ``_unlock_inner_to_recursive(inner)`` →
+  per-block ``.to(cpu_dev)`` → ``_lock_inner_to_recursive(inner)`` (mirrors
+  apply_strategy hot-switch pattern).
+
+- **WhitePaper §8.3 HIGH — Gemma encoder caching** (core/gguf_split.py:_GEMMA_CACHE):
+  Caches ``load_gemma_hybrid`` result keyed by
+  ``(encoder_name, projection_name, donor_device, eject_models)``.
+  2-pass workflows save ~10–30s by skipping redundant ``comfy.sd.load_clip``
+  calls. New public ``clear_gemma_cache()`` exported for test isolation.
+
+- **WhitePaper §8.5 MEDIUM — Gemma module-level move** (core/gguf_split.py:load_gemma_hybrid):
+  Replaced ~4000-param per-``.to(device)`` loop with **two** module-level moves:
+  ``inner.to(donor_dev)`` → ``proj_module.to(primary_dev)``.
+  10–30× faster, lower PCIe overhead. Module-level move lets PyTorch merge
+  all param + buffer + Module-level state operations.
+
+- **node_fyx.md UI rework** (nodes.py):
+  7 nodes rebranded with emoji DISPLAY_NAMEs:
+  🧠 Load LTX2 GGUF Model · 📝 Load Dual Text Encoder · 💾 VRAM Diagnostics ·
+  🎯 Switch GPU Strategy · 🅿️ Park DiT (VRAM ↔ CPU) ·
+  ⚡ SageAttention (T4 Turbo) · 🎨 Load LTX2 VAE.
+  CATEGORY hierarchical split: ``THE-ANGEL-AI/LTX2`` (loaders + strategy) +
+  ``THE-ANGEL-AI/Utilities`` (parking, diagnostics, sage).
+  ``folder_paths`` paths corrected: GGUF from ``diffusion_models/``, CLIP from
+  ``text_encoders/`` (with ``clip/`` fallback), VAE from ``vae/``.
+
+### 🔧 Fixed (Batch 4 carryover)
+
+- **apply_strategy hot-switch silent no-op** (core/gguf_split.py:apply_strategy):
+  Per-block split-mode ``.to(target_dev)`` under Round 3 BUG-6 lock silently
+  no-op'd → hot-switch didn't change GPU layout. Fix: 
+  ``_unlock_inner_to_recursive(inner)`` → per-block move →
+  ``_lock_inner_to_recursive(inner)`` (try/finally for re-lock guarantee).
+
+### ✅ Verified
+
+- py_compile OK: 8 source files + 6 test files (new widget names, Round 3
+  BUG-5/6/7 helpers, Round 4 parking unlock/relock, _GEMMA_CACHE).
+- unittest validation final pass — see commit message for actual count.
+- _GEMMA_CACHE cache-hit returns identical ModelPatcher:
+  no re-dequant, no re-load_clip, no fresh hook installation.
+
+### 🚫 Not implemented (deferred)
+
+- WhitePaper §8.4 MEDIUM (memory tracker accuracy via GGUF quant header)
+  → v0.6.1.
+- WhitePaper §8.6 LOW (``virtual_vram_gb`` widget)
+  → v0.6.1.
+- WhitePaper §8.7 LOW (alternating pipeline strategy blocks bounce between GPUs)
+  → v0.7.
+- node_fyx.md ``advanced_mode`` collapse toggle (depends on ComfyUI >= 0.4.0
+  widget visibility API) → deferred.
+- API-format workflow migration script
+  → v0.6.1 (UI workflows unaffected by Batch 4 — positional ``widgets_values``).
+
+### 🧹 Cleanup
+
+- tests/test_init.py: deprecated helper stubs were already removed in Round 2
+  (migrated to ``_patch_torch_cm`` contextmanager). Confirmed in Batch 4 that
+  no remaining ``_patch_torch`` or ``_make_cuda_mock`` aliases are dead code.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+---
+
 # История изменений (Changelog)
 
 Все значимые изменения в этом проекте документируются в этом файле.

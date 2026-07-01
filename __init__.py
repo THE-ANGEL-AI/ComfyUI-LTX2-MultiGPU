@@ -5,7 +5,7 @@
   Repo:            https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU
   Sponsor:         https://boosty.to/the_angel/donate
   License:         GPL-3.0-or-later (см. LICENSE)
-  Display category: "THE-ANGEL-AI" (7 нод: 🔀 Разделитель DiT / 📝 Dual CLIP / 🩺 Диагностика / ⚙️ Стратегия / 🅿️ Парковка / ⚡ SageAttention / 🖼️ VAE)
+  Display category: "THE-ANGEL-AI" (7 нод: 🧠 LTX2 GGUF / 📝 Dual CLIP / 💾 Диагностика / 🎯 Стратегия / 🅿️ Парковка / ⚡ SageAttention / 🎨 LTX2 VAE)
 
   Независимая разработка для конфигурации 2×15 ГБ (T4×2 / Kaggle) с
   долгой оптимизацией под этот железный профиль (см. CHANGELOG).
@@ -18,7 +18,7 @@
 узле НЕ должен ломать загрузку всего пакета (видно в меню Add Node).
 """
 
-__version__ = "0.3.0-pre"
+__version__ = "0.6.0-pre"
 __author__ = "The Angel Studio"
 __author_email__ = "gi.the.angel@gmail.com"
 __author_github__ = "THE-ANGEL-AI"
@@ -39,9 +39,8 @@ if _os.environ.get("LTX2_MULTIGPU_VERBOSE") == "1":
         # stdout может быть unavailable в редких env (frozen exe, systemd)
         pass
 
-NODE_CONFIG: list[dict] = [
-    # Заполняется автоматически из nodes.py — см. _generate ниже.
-]
+NODE_CONFIG: list[dict] = []
+# Заполняется автоматически из nodes.py в _build_config() ниже.
 
 
 def _build_config() -> None:
@@ -54,16 +53,28 @@ def _build_config() -> None:
     ⚠️ CRITICAL: Используем ОТНОСИТЕЛЬНЫЙ импорт ``.nodes``, а НЕ
     ``importlib.import_module("nodes")`` — последний в ComfyUI runtime
     находит ROOT ``nodes.py`` (уже в sys.modules) вместо нашего!
+
+    NEW (v0.6.0-pre, reviewer-minimax-m3 item #2): clear _GEMMA_CACHE at
+    package import. Drops any stale entries from prior-version 5-tuple
+    keys that would orphan under current 4-tuple key contract
+    (encoder_name, projection_name, donor_device, eject_models).
     """
+    # NEW (v0.6.0-pre): _GEMMA_CACHE orphan cleanup at package load.
+    # Wrapped in try/except so failure doesn't block package import (R6).
+    try:
+        from core.gguf_split import clear_gemma_cache  # type: ignore[import-not-found]
+        clear_gemma_cache()
+    except Exception:  # noqa: BLE001
+        # Best-effort cleanup; if core module is unavailable (test env),
+        # silently skip — cache will work on next load.
+        pass
+
     import inspect
 
     try:
         from . import nodes as _nodes
-    except Exception as exc:  # noqa: BLE001 — широкий except защищает пакет от сбоя
+    except Exception as exc:  # noqa: BLE001
         print(f"[ComfyUI-LTX2-MultiGPU] Failed to import '.nodes': {exc}")
-        # Полный traceback — иначе в консоли ComfyUI видна только
-        # короткая строка exc и причина сбоя теряется (R6 хоть и
-        # защищает пакет, но скрывать traceback — это анти-паттерн).
         import traceback as _tb
         _tb.print_exc()
         return
@@ -89,7 +100,7 @@ _build_config()
 NODE_CLASS_MAPPINGS: dict[str, type] = {cfg["id"]: cfg["class"] for cfg in NODE_CONFIG}
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {cfg["id"]: cfg["name"] for cfg in NODE_CONFIG}
 
-# WEB_DIRECTORY обявляется только при наличии web/ — здесь его нет.
+# WEB_DIRECTORY объявляется только при наличии web/ — здесь его нет.
 
 __all__ = [
     "NODE_CLASS_MAPPINGS",

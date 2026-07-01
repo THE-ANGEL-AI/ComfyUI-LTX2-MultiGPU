@@ -7,9 +7,33 @@
   R4 — типы строго MODEL / CLIP / VAE / LATENT (FUNCTION возвращает tuple, длина ⇔ RETURN_TYPES)
   R5/R6 — уникальные префиксы в ключах (LTX2_MultiGPU_...), тяжёлые импорты в try/except
 
-REFACTOR: стратегии сплита ('blocks_50_50', 'blocks_30_70', ...) импортируются
-из core.gguf_split.STRATEGIES (single source of truth). Если в v0.х в будущем
-добавится стратегия — только core/, ноды переиспользуют автоматически.
+REFACTOR: стратегии сплита импортируются из core.gguf_split.STRATEGIES
+(single source of truth).
+
+v0.6.0-pre UI REWORK (per Agent_Info/node_fyx.md):
+  - CATEGORY → nested hierarchy: ``THE-ANGEL-AI/LTX2`` (loaders + strategy) +
+    ``THE-ANGEL-AI/Utilities`` (parking, diagnostics, sage).
+  - DISPLAY_NAME → English with emoji per node_fyx.md: 🧠 Load, 📝 Load,
+    🎨 Load, 🎯 Switch, 🅿️ Park, 💾 Diagnostics, ⚡ Sage.
+  - Widget key renames (clearer for users):
+      unet_name       → gguf_model
+      split_strategy  → split_mode
+      donor_device    → memory_gpu
+      vae_name        → vae_model
+      clip_name1      → clip_model
+      projection_name → projection_path
+      gemma_name      → clip_model (unified with GemmaHybrid)
+      park_in_cpu     → park_model
+      eject_models    → unload_after_generation
+      verbose_log     → verbose
+      strategy        → mode (in DeviceStrategy)
+      purge_cache     → clear_cache_after
+  - All renames are HARD RENAMES (no backward-compat aliases per user request
+    to clean up dead code immediately).
+
+⚠️ BREAKING CHANGE: existing workflow_api.json that reference old widget
+   keys (unet_name, donor_device, etc.) need widget-key migration. CHANGELOG
+   v0.6.0-pre lists migration path; example_workflows/* updated.
 """
 
 from __future__ import annotations
@@ -30,14 +54,13 @@ except Exception:  # noqa: BLE001
 
 # REFACTOR-1: единый список стратегий из core/gguf_split.py — single source
 # of truth. Если core добавляет/удаляет стратегию, ноды синхронизируются
-# автоматически (раньше дублировалось в HybridSplitLoader + DeviceStrategy).
+# автоматически.
 try:
     from core.gguf_split import STRATEGIES as _STRATEGIES  # type: ignore[import-not-found]
 except Exception:  # noqa: BLE001
-    # Fallback: если core недоступен (например, при unit-тестах где core
-    # не подгружен) — держим те же 5 стратегий как literal, чтобы ComfyUI
-    # dropdown отрисовался корректно. core.STRATEGIES — канонический
-    # source; этот fallback — только для нестандартных окружений.
+    # Fallback: при unit-тестах где core не подгружен — держим 5 стратегий как
+    # literal, чтобы ComfyUI dropdown отрисовался корректно. core.STRATEGIES —
+    # канонический source.
     _STRATEGIES = (
         "blocks_50_50",
         "blocks_30_70",
@@ -48,28 +71,29 @@ except Exception:  # noqa: BLE001
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Module-level helpers (FIX LOW #4: дедупликация _donor_choices)
+#  Module-level helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
-    """Динамический donor_device-список для ComfyUI-dropdown.
+def _memory_gpu_choices(include_cpu: bool = False) -> list[str]:
+    """Динамический список device options для ComfyUI-dropdown.
 
-    Поведение:
+    Семантика per node_fyx.md: вся VRAM placement логика unified под
+    ``memory_gpu`` widget (раньше назывался ``donor_device``). Поведение:
       - ``auto`` — ВСЕГДА первая опция.
       - ``cuda:0`` / ``cuda:1`` (и cuda:N для N>1) — добавляются ТОЛЬКО если
         ``torch.cuda.is_available() == True``. На CPU-only машинах / при
         torch=None — НЕ показываем cuda:* (юзер не должен видеть опции,
-        которые упадут с RuntimeError на load). Это контракт: документирован
-        в docstring v0.2.x, но в реализации был баг (cuda:0/cuda:1 добавлялись
+        которые упадут с RuntimeError на load). Контракт задокументирован
+        в docstring v0.2.x; в реализации был баг (cuda:0/cuda:1 добавлялись
         безусловно); фикс ниже.
-      - ``cpu`` — только при ``include_cpu=True`` (Gemma / VAE; DiT — никогда).
+      - ``cpu`` — только при ``include_cpu=True`` (CLIP encoder / VAE; DiT —
+        never).
 
     Args:
-        include_cpu: True для Gemma / VAE (encoder допускает CPU — он не
-                      участвует в sampling-loop); False для DiT (DiT
-                      не может жить на CPU во время KSampler-step).
+        include_cpu: True для CLIP / VAE (encoder допускает CPU); False для
+                      DiT (DiT не может жить на CPU во время KSampler-step).
 
     Note:
-        Test ``tests/test_init.py::TestCudaDonorChoices`` дублирует контракт;
+        Test ``tests/test_init.py::TestMemoryGpuChoices`` дублирует контракт;
         при изменении поведения — синхронизировать тест.
     """
     choices: list[str] = ["auto"]
@@ -92,73 +116,62 @@ def _cuda_donor_choices(include_cpu: bool = False) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 1. LTX2_MultiGPU_HybridSplitLoader
+#  Узел 1. 🧠 Load LTX2 GGUF Model
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_HybridSplitLoader:
-    """Заменяет UnetLoaderGGUFDisTorch2MultiGPU для LTX 2.3 GGUF.
+    """Загружает LTX 2.3 GGUF и распределяет DiT блоки по двум GPU.
 
+    Заменяет ``UnetLoaderGGUFDisTorch2MultiGPU`` для LTX 2.3 GGUF.
     Возвращает (R3) ModelPatcher-совместимый объект — совместим с LoRA,
     offload, sampler. Реализация сплита лежит в core/gguf_split.py.
 
-    UI mirror GemmaHybrid: добавлен `donor_device` (auto/cuda:0/cuda:1).
-    NB: `eject_models` НЕ добавляется — DiT вызывается каждый sampling-step,
-    offload DiT → CPU = PCIe death и sampling stall. cpу как donor_device
-    отвергается уже в INPUT_TYPES (выбор ограничен 3-мя опциями).
+    NB: ``unload_after_generation`` НЕ добавляется — DiT вызывается каждый
+    sampling-step, offload DiT → CPU = PCIe death и sampling stall.
     """
 
     NODE_ID = "LTX2_MultiGPU_HybridSplitLoader"
-    # Russian display name for users (grouped by CATEGORY).
-    # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "🔀 Разделитель DiT (2×GPU)"
+    # English display name with brand emoji per node_fyx.md.
+    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node
+    # menu, so we don't repeat it here. NODE_ID preserved for workflow_api
+    # backward-compat (не переименовывается even in breaking v0.6.0-pre).
+    DISPLAY_NAME = "🧠 Load LTX2 GGUF Model"
 
     FUNCTION = "load"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/LTX2"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("model",)
 
-    # DiT-specific donor_device: НЕТ 'cpu' — DiT не может быть на CPU во время sampling.
-    # Решение принято в design-discussion: см. commit message + docstring class.
-
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        # FIX dropdown-bug: ВСЕГДА используем folder_paths.get_filename_list()
-        # если _FOLDER_PATHS_OK — даже при пустом списке ComfyUI рендерит
-        # выпадающий список (пустой dropdown ЛУЧШЕ чем bare text input).
-        # "(choices_tuple, )" = ComfyUI-формат для dropdown-виджета.
         if _FOLDER_PATHS_OK:
             try:
-                # BUG-1 fix: ``folder_paths.get_filename_list()`` может вернуть
-                # ``None`` вместо ``[]`` для пустой/несуществующей папки.
-                # ComfyUI-frontend тогда видит ``(None,)`` и либо крашится,
-                # либо показывает bare text input вместо dropdown. ``or []``
-                # гарантирует list.
-                unet_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
+                gguf_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                unet_choices = []
-            unet_opts: tuple = (unet_choices,)
+                gguf_choices = []
+            gguf_opts: tuple = (gguf_choices,)
         else:
-            unet_opts = ("STRING", {"default": ""})
+            gguf_opts = ("STRING", {"default": ""})
         return {
             "required": {
-                "unet_name": unet_opts,
-                "split_strategy": (
-                    list(_STRATEGIES),  # REFACTOR-1: from core/gguf_split.STRATEGIES
+                "gguf_model": gguf_opts,
+                "split_mode": (
+                    list(_STRATEGIES),
                     {"default": "blocks_50_50"},
                 ),
-                # FIX LOW #4+#6: module-level dynamic donor_device.
-                "donor_device": (_cuda_donor_choices(include_cpu=False), {"default": "auto"}),
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                # DiT-specific: НЕТ 'cpu' — DiT не может быть на CPU во время sampling.
+                "memory_gpu": (_memory_gpu_choices(include_cpu=False), {"default": "auto"}),
+                "verbose": ("BOOLEAN", {"default": False}),
             }
         }
 
     def load(
         self,
-        unet_name: str,
-        split_strategy: str,
-        donor_device: str,
-        verbose_log: bool,
+        gguf_model: str,
+        split_mode: str,
+        memory_gpu: str,
+        verbose: bool,
     ) -> tuple:
         """Делегирует в core.gguf_split.hybrid_split_gguf (R4: tuple-возврат)."""
         if folder_paths is None:
@@ -170,68 +183,57 @@ class LTX2_MultiGPU_HybridSplitLoader:
 
         try:
             model_patcher = hybrid_split_gguf(
-                gguf_name=unet_name,
-                strategy=split_strategy,
-                verbose=verbose_log,
-                donor_device=donor_device,
+                gguf_name=gguf_model,
+                strategy=split_mode,
+                verbose=verbose,
+                donor_device=memory_gpu,
             )
         except NotImplementedError as exc:
             raise RuntimeError(
                 f"ComfyUI-LTX2-MultiGPU: {exc}"
             ) from exc
 
-        if verbose_log:
+        if verbose:
             print(
-                f"[ComfyUI-LTX2-MultiGPU] Loaded {unet_name} with strategy "
-                f"{split_strategy}, donor={donor_device}"
+                f"[ComfyUI-LTX2-MultiGPU] Loaded {gguf_model} with split_mode "
+                f"{split_mode}, memory_gpu={memory_gpu}"
             )
 
         return (model_patcher,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 2. LTX2_MultiGPU_GemmaHybridLoader
+#  Узел 2. 📝 Load Dual Text Encoder
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_GemmaHybridLoader:
-    """Жёсткая загрузка Gemma 3 12B FP4: encoder → donor_device, projection → cuda:0.
+    """Жёсткая загрузка Gemma 3 12B FP4 как Dual CLIP: encoder + projection.
 
-    UI совместим с DualCLIPLoaderDisTorch2MultiGPU (см. скриншот пользователя):
-      donor_device   куда грузить encoder (auto / cuda:0 / cuda:1 / cpu).
-                     auto ⇒ mm-derived secondary (cuda:1 в dual-GPU config).
-      eject_models   True ⇒ после load: offload_device=CPU + soft_empty_cache.
-                     NB: под Risk #7 lock (.to() no-op) sampler не сможет
-                     re-load projection обратно на cuda:0 после eject —
-                         используйте только если уверены.
-      verbose_log    печатать per-component allocation log (encoder/proj GB,
-                     VRAM free до/после).
+    UI совместим с DualCLIPLoaderDisTorch2MultiGPU:
+      clip_model              Gemma 3 safetensors (.safetensors).
+      projection_path         text_projection safetensors.
+      memory_gpu              куда грузить encoder (auto / cuda:0 / cuda:1 / cpu).
+                             auto ⇒ mm-derived secondary (cuda:1 в dual-GPU config).
+      unload_after_generation True ⇒ после load: offload_device=CPU + soft_empty_cache.
+                             NB: под recursive .to() lock (BUG-6 fix) sampler не
+                             сможет blanket re-load projection обратно на cuda:0
+                             после unload — используйте только если уверены.
+      verbose                 per-component allocation log + VRAM snapshot.
     """
 
     NODE_ID = "LTX2_MultiGPU_GemmaHybridLoader"
-    # Russian display name for users (grouped by CATEGORY).
-    # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "📝 Dual CLIP Загрузчик (Gemma 3)"
+    DISPLAY_NAME = "📝 Load Dual Text Encoder"
 
     FUNCTION = "load"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/LTX2"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("CLIP",)
     RETURN_NAMES = ("clip",)
 
-    # Donor-device options FIX LOW #4: дедуп через module-level helper
-    # ``_cuda_donor_choices(include_cpu=True)``.
-
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        # FIX dropdown-bug: ВСЕГДА используем folder_paths.get_filename_list()
-        # если _FOLDER_PATHS_OK — даже при пустом списке ComfyUI рендерит
-        # выпадающий список (пустой dropdown ЛУЧШЕ чем bare text input).
-        # Gemma-файлы (.safetensors) могут лежать в text_encoders/ ИЛИ clip/ —
-        # объединяем обе папки для encoder и projection.
         if _FOLDER_PATHS_OK:
             try:
-                # BUG-1 fix (см. HybridSplitLoader): ``or []`` гарантирует list
-                # даже если folder_paths вернул ``None`` для несуществующей папки.
                 enc_folder = folder_paths.get_filename_list("text_encoders") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 enc_folder = []
@@ -239,139 +241,119 @@ class LTX2_MultiGPU_GemmaHybridLoader:
                 clip_folder = folder_paths.get_filename_list("clip") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 clip_folder = []
-            # Оба виджета видят файлы из обеих папок (как старый код через
-            # ``for folder in (...): if items: break``, но БЕЗ guard'а).
-            merged: list = list(dict.fromkeys(enc_folder + clip_folder))  # dedup
-            enc_opts: tuple = (merged,)
+            merged: list = list(dict.fromkeys(enc_folder + clip_folder))
+            clip_opts: tuple = (merged,)
             proj_opts: tuple = (merged,)
         else:
-            enc_opts = ("STRING", {"default": ""})
+            clip_opts = ("STRING", {"default": ""})
             proj_opts = ("STRING", {"default": ""})
         return {
             "required": {
-                "clip_name1": enc_opts,
-                "projection_name": proj_opts,
-                "donor_device": (_cuda_donor_choices(include_cpu=True), {"default": "auto"}),
-                "eject_models": ("BOOLEAN", {"default": False}),
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                "clip_model": clip_opts,
+                "projection_path": proj_opts,
+                "memory_gpu": (_memory_gpu_choices(include_cpu=True), {"default": "auto"}),
+                "unload_after_generation": ("BOOLEAN", {"default": False}),
+                "verbose": ("BOOLEAN", {"default": False}),
             }
         }
 
     def load(
         self,
-        clip_name1: str,
-        projection_name: str,
-        donor_device: str,
-        eject_models: bool,
-        verbose_log: bool,
+        clip_model: str,
+        projection_path: str,
+        memory_gpu: str,
+        unload_after_generation: bool,
+        verbose: bool,
     ) -> tuple:
         from core.gguf_split import load_gemma_hybrid
 
-        # load_gemma_hybrid raises RuntimeError с понятными причинами
-        # (усл.). Не мапим в RuntimeError повторно — propagate as is.
         clip = load_gemma_hybrid(
-            encoder_name=clip_name1,
-            projection_name=projection_name,
-            verbose=verbose_log,
-            donor_device=donor_device,
-            eject_models=eject_models,
+            encoder_name=clip_model,
+            projection_name=projection_path,
+            verbose=verbose,
+            donor_device=memory_gpu,
+            eject_models=unload_after_generation,
         )
 
         return (clip,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 3. LTX2_MultiGPU_MemoryDiagnostics
+#  Узел 3. 💾 VRAM Diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_MemoryDiagnostics:
     """Pre-flight VRAM checker: dry-load прогон + nvidia-smi лог в консоль."""
 
     NODE_ID = "LTX2_MultiGPU_MemoryDiagnostics"
-    # Russian display name for users (grouped by CATEGORY).
-    # NODE_ID (technical class key) preserved for workflow_api compat.
-    DISPLAY_NAME = "🩺 Диагностика VRAM"
+    DISPLAY_NAME = "💾 VRAM Diagnostics"
 
     FUNCTION = "diagnose"
-    CATEGORY = "THE-ANGEL-AI"
-    OUTPUT_NODE = True  # для ui={'report': [report]}
+    CATEGORY = "THE-ANGEL-AI/Utilities"
+    OUTPUT_NODE = True
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("report",)
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        # FIX dropdown-bug: MemoryDiagnostics тоже должен показывать
-        # выпадающие списки файлов, а не голые текстовые поля.
-        # Gemma (.safetensors) может быть в text_encoders/ ИЛИ clip/.
         if _FOLDER_PATHS_OK:
             try:
-                # BUG-1 fix (см. HybridSplitLoader): ``or []`` для None-safety.
-                unet_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
+                gguf_choices: list = folder_paths.get_filename_list("diffusion_models") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                unet_choices = []
+                gguf_choices = []
             try:
-                gemma_enc = folder_paths.get_filename_list("text_encoders") or []  # type: ignore[union-attr]
+                clip_enc = folder_paths.get_filename_list("text_encoders") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                gemma_enc = []
+                clip_enc = []
             try:
-                gemma_clip = folder_paths.get_filename_list("clip") or []  # type: ignore[union-attr]
+                clip_clip = folder_paths.get_filename_list("clip") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
-                gemma_clip = []
-            gemma_choices: list = list(dict.fromkeys(gemma_enc + gemma_clip))  # dedup
-            unet_opts: tuple = (unet_choices,)
-            gemma_opts: tuple = (gemma_choices,)
+                clip_clip = []
+            clip_choices: list = list(dict.fromkeys(clip_enc + clip_clip))
+            gguf_opts: tuple = (gguf_choices,)
+            clip_opts: tuple = (clip_choices,)
         else:
-            unet_opts = ("STRING", {"default": ""})
-            gemma_opts = ("STRING", {"default": ""})
+            gguf_opts = ("STRING", {"default": ""})
+            clip_opts = ("STRING", {"default": ""})
         return {
             "required": {
-                "unet_name": unet_opts,
-                "gemma_name": gemma_opts,
-                "purge_cache": ("BOOLEAN", {"default": True}),
+                "gguf_model": gguf_opts,
+                "clip_model": clip_opts,
+                # Per node_fyx.md: parameter naming follows English "clear cache
+                # after" — clearer for non-native speakers than "purge".
+                "clear_cache_after": ("BOOLEAN", {"default": True}),
             }
         }
 
     def diagnose(
         self,
-        unet_name: str,
-        gemma_name: str,
-        purge_cache: bool,
+        gguf_model: str,
+        clip_model: str,
+        clear_cache_after: bool,
     ) -> tuple:
-        """R4: V1 tuple-контракт — возвращаем ровно ``(report,)``.
-
-        ComfyUI ``execution.py`` анпакает выходы по схеме
-        ``val, = node.FUNCTION(...)``. Dict-возврат формата
-        ``{"ui": ..., "result": (...)}`` понимают только новые версии ComfyUI
-        (V3 preview API); на старых / Kaggle-зерокопии — крашится с
-        ``ValueError: too many values to unpack (expected 1)``.
-        Для консольного preview достаточно print() — он попадает в ComfyUI log
-        stdout и виден без UI.
-        """
+        """R4: V1 tuple-контракт — возвращаем ровно ``(report,)``."""
         from core.memory_tracker import estimate_vram_budget
 
         report = estimate_vram_budget(
-            gguf_name=unet_name,
-            gemma_name=gemma_name,
-            purge_cache=purge_cache,
+            gguf_name=gguf_model,
+            gemma_name=clip_model,
+            purge_cache=clear_cache_after,
         )
         print(f"[ComfyUI-LTX2-MultiGPU]\n{report}")
         return (report,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 4. LTX2_MultiGPU_DeviceStrategy
+#  Узел 4. 🎯 Switch GPU Strategy
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_DeviceStrategy:
-    """Переключатель глобальной стратегии распределения через mm."""
+    """Hot-switch split layout без reload модели."""
 
     NODE_ID = "LTX2_MultiGPU_DeviceStrategy"
-    # Russian display name for users (grouped by CATEGORY="THE-ANGEL-AI").
-    # CATEGORY prefix adds the brand tag automatically in ComfyUI's Add Node menu,
-    # so we don't repeat it here. NODE_ID (technical class key) preserved.
-    DISPLAY_NAME = "⚙️ Стратегия GPU (hot-switch)"
+    DISPLAY_NAME = "🎯 Switch GPU Strategy"
 
     FUNCTION = "apply_strategy"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/LTX2"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -382,40 +364,36 @@ class LTX2_MultiGPU_DeviceStrategy:
         return {
             "required": {
                 "model": ("MODEL",),
-                "strategy": (
-                    list(_STRATEGIES),  # REFACTOR-1: from core/gguf_split.STRATEGIES
+                # Per node_fyx.md: ``strategy`` → ``mode`` (shorter, matches
+                # ComfyUI native Sampler.language convention).
+                "mode": (
+                    list(_STRATEGIES),
                     {"default": "blocks_50_50"},
                 ),
-                # NEW (v0.2.1): donor_device widget — раньше нода захардкодила
-                # ``secondary_dev`` из ``resolve_devices()``, из-за чего смена
-                # стратегии на лету ИГНОРИРОВАЛА user override из HybridSplitLoader.
-                # Теперь оба loadера (нода + HybridSplitLoader) могут горячо менять
-                # стратегию с учётом оригинального donor_device.
-                "donor_device": (_cuda_donor_choices(include_cpu=False), {"default": "auto"}),
+                # NEW (v0.2.1) / v0.6.0-pre renamed: honor user override from
+                # HybridSplitLoader; cpu отвергнут для DiT в INPUT_TYPES.
+                "memory_gpu": (_memory_gpu_choices(include_cpu=False), {"default": "auto"}),
             },
             "optional": {
-                # FIX MEDIUM_apply_strategy: forward verbose из UI-виджета в
-                # core.apply_strategy(verbose=verbose_log). WARN уже unconditional
-                # в core (cab22dc), verbose используется для детального per-block лога.
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                "verbose": ("BOOLEAN", {"default": False}),
             },
         }
 
     def apply_strategy(
         self,
         model,
-        strategy: str,
-        donor_device: str = "auto",
-        verbose_log: bool = False,
+        mode: str,
+        memory_gpu: str = "auto",
+        verbose: bool = False,
     ) -> tuple:
         from core.gguf_split import apply_strategy as _apply
 
         try:
             new_patcher = _apply(
                 patcher=model,
-                strategy=strategy,
-                verbose=verbose_log,
-                donor_device=donor_device,
+                strategy=mode,
+                verbose=verbose,
+                donor_device=memory_gpu,
             )
         except NotImplementedError as exc:
             raise RuntimeError(
@@ -425,7 +403,7 @@ class LTX2_MultiGPU_DeviceStrategy:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 5. LTX2_MultiGPU_VRAMParking
+#  Узел 5. 🅿️ Park DiT (VRAM ↔ CPU)
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_VRAMParking:
     """Временно убирает DiT из VRAM для освобождения памяти под VAE/upscale.
@@ -440,10 +418,10 @@ class LTX2_MultiGPU_VRAMParking:
     """
 
     NODE_ID = "LTX2_MultiGPU_VRAMParking"
-    DISPLAY_NAME = "🅿️ Парковка DiT (VRAM↔CPU)"
+    DISPLAY_NAME = "🅿️ Park DiT (VRAM ↔ CPU)"
 
     FUNCTION = "apply"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/Utilities"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -454,38 +432,39 @@ class LTX2_MultiGPU_VRAMParking:
         return {
             "required": {
                 "model": ("MODEL",),
-                "park_in_cpu": ("BOOLEAN", {"default": True,
-                    "label_on": "Запарковать в CPU",
-                    "label_off": "Вернуть на GPU"}),
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                # Per node_fyx.md: ``park_model`` boolean toggle (was park_in_cpu).
+                "park_model": ("BOOLEAN", {"default": True,
+                    "label_on": "Запарковать DiT (CPU)",
+                    "label_off": "Вернуть DiT (GPU)"}),
+                "verbose": ("BOOLEAN", {"default": False}),
             }
         }
 
     def apply(
         self,
         model,
-        park_in_cpu: bool,
-        verbose_log: bool = False,
+        park_model: bool,
+        verbose: bool = False,
     ) -> tuple:
         from core.vram_parking import park_dit, unpark_dit
 
-        if park_in_cpu:
+        if park_model:
             park_dit(model)
         else:
             unpark_dit(model)
 
-        if verbose_log:
-            state = "запаркован" if park_in_cpu else "распаркован"
+        if verbose:
+            state = "запаркован" if park_model else "распаркован"
             print(
                 f"[ComfyUI-LTX2-MultiGPU] VRAMParking: DiT {state} "
-                f"({'park_in_cpu=True' if park_in_cpu else 'park_in_cpu=False'})"
+                f"(park_model={'True' if park_model else 'False'})"
             )
 
         return (model,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 6. LTX2_MultiGPU_SageAttention
+#  Узел 6. ⚡ SageAttention (T4 Turbo)
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_SageAttention:
     """Ускоритель внимания через SageAttention-SM75 (оптимизация под T4/SM75).
@@ -501,10 +480,10 @@ class LTX2_MultiGPU_SageAttention:
     """
 
     NODE_ID = "LTX2_MultiGPU_SageAttention"
-    DISPLAY_NAME = "⚡ SageAttention (T4 турбо)"
+    DISPLAY_NAME = "⚡ SageAttention (T4 Turbo)"
 
     FUNCTION = "apply"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/Utilities"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("MODEL",)
@@ -518,7 +497,7 @@ class LTX2_MultiGPU_SageAttention:
                 "enable": ("BOOLEAN", {"default": True,
                     "label_on": "Включить SageAttn",
                     "label_off": "Выключить"}),
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                "verbose": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -526,25 +505,25 @@ class LTX2_MultiGPU_SageAttention:
         self,
         model,
         enable: bool,
-        verbose_log: bool = False,
+        verbose: bool = False,
     ) -> tuple:
         from core.sage_attention import get_sageattn_patch
 
-        # Клонируем patcher чтобы не мутировать оригинальный граф
+        # Clone patcher чтобы не мутировать оригинальный граф
         # (shallow copy model_options).
         patcher = model.clone()
 
         if enable:
-            patch = get_sageattn_patch(verbose=verbose_log)
+            patch = get_sageattn_patch(verbose=verbose)
             if patch:
                 opts = patcher.model_options.setdefault("attention_patch", {})
                 opts.update(patch)
-                if verbose_log:
+                if verbose:
                     print(
                         "[ComfyUI-LTX2-MultiGPU] SageAttention патч "
                         "установлен в model_options."
                     )
-            elif verbose_log:
+            elif verbose:
                 print(
                     "[ComfyUI-LTX2-MultiGPU] SageAttention НЕ активирован "
                     "(модуль sageattn не найден)."
@@ -553,17 +532,16 @@ class LTX2_MultiGPU_SageAttention:
             # Очищаем патч если был установлен ранее в цепочке нод.
             if "attention_patch" in patcher.model_options:
                 patcher.model_options["attention_patch"].pop("default", None)
-                # Убираем пустой attention_patch ключ (чистота model_options).
                 if not patcher.model_options["attention_patch"]:
                     del patcher.model_options["attention_patch"]
-            if verbose_log:
+            if verbose:
                 print("[ComfyUI-LTX2-MultiGPU] SageAttention отключён.")
 
         return (patcher,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Узел 7. LTX2_MultiGPU_VAELoader
+#  Узел 7. 🎨 Load LTX2 VAE
 # ─────────────────────────────────────────────────────────────────────────────
 class LTX2_MultiGPU_VAELoader:
     """VAE загрузчик с выбором GPU для VAE Decode/Encode.
@@ -572,16 +550,13 @@ class LTX2_MultiGPU_VAELoader:
     с DiT/Gemma за память. Эта нода позволяет явно выбрать GPU для
     VAE, чтобы избежать OOM между Pass 1 и Pass 2 (VAE decode → upscale
     → VAE encode).
-
-    Использует ``comfy.sd.load_vae()`` для загрузки и ``.to(device)``
-    для явного размещения на выбранном GPU.
     """
 
     NODE_ID = "LTX2_MultiGPU_VAELoader"
-    DISPLAY_NAME = "🖼️ VAE Загрузчик (GPU)"
+    DISPLAY_NAME = "🎨 Load LTX2 VAE"
 
     FUNCTION = "load"
-    CATEGORY = "THE-ANGEL-AI"
+    CATEGORY = "THE-ANGEL-AI/LTX2"
     OUTPUT_NODE = False
 
     RETURN_TYPES = ("VAE",)
@@ -589,10 +564,8 @@ class LTX2_MultiGPU_VAELoader:
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
-        # FIX dropdown-bug: всегда dropdown (даже пустой) если _FOLDER_PATHS_OK.
         if _FOLDER_PATHS_OK:
             try:
-                # BUG-1 fix (см. HybridSplitLoader): ``or []`` для None-safety.
                 vae_choices: list = folder_paths.get_filename_list("vae") or []  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 vae_choices = []
@@ -601,18 +574,18 @@ class LTX2_MultiGPU_VAELoader:
             vae_opts = ("STRING", {"default": ""})
         return {
             "required": {
-                "vae_name": vae_opts,
+                "vae_model": vae_opts,
                 # VAE может жить на CPU между вызовами — include_cpu=True.
-                "donor_device": (_cuda_donor_choices(include_cpu=True), {"default": "auto"}),
-                "verbose_log": ("BOOLEAN", {"default": False}),
+                "memory_gpu": (_memory_gpu_choices(include_cpu=True), {"default": "auto"}),
+                "verbose": ("BOOLEAN", {"default": False}),
             }
         }
 
     def load(
         self,
-        vae_name: str,
-        donor_device: str,
-        verbose_log: bool,
+        vae_model: str,
+        memory_gpu: str,
+        verbose: bool,
     ) -> tuple:
         """Загружает VAE и размещает на выбранном GPU."""
         if folder_paths is None or torch is None:
@@ -628,39 +601,34 @@ class LTX2_MultiGPU_VAELoader:
                 f"comfy.sd / model_management недоступны: {exc}"
             ) from exc
 
-        # ── Разрешаем device (делегирует в core/gguf_split) ────────────
         from core.gguf_split import resolve_devices, resolve_donor_device
 
         primary_dev, secondary_dev = resolve_devices()
-        target_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
+        target_dev = resolve_donor_device(memory_gpu, primary_dev, secondary_dev)
 
-        # ── Загружаем VAE ───────────────────────────────────────────────
-        vae_path = folder_paths.get_full_path("vae", vae_name)
+        vae_path = folder_paths.get_full_path("vae", vae_model)
         if not vae_path:
             raise FileNotFoundError(
-                f"VAE '{vae_name}' не найден в vae/"
+                f"VAE '{vae_model}' не найден в vae/"
             )
 
         try:
             vae = comfy_sd.load_vae(vae_path)
         except Exception as exc:
             raise RuntimeError(
-                f"comfy.sd.load_vae failed для {vae_name!r}: {exc}"
+                f"comfy.sd.load_vae failed для {vae_model!r}: {exc}"
             ) from exc
 
         if vae is None:
             raise RuntimeError(
-                f"comfy.sd.load_vae вернул None для {vae_name!r}"
+                f"comfy.sd.load_vae вернул None для {vae_model!r}"
             )
 
-        # ── Размещаем first_stage_model на целевом устройстве ───────────
-        # VAE объект в ComfyUI содержит .first_stage_model (nn.Module).
-        # Перемещаем его на target_dev для VAE Decode/Encode.
         if hasattr(vae, "first_stage_model"):
             try:
                 vae.first_stage_model.to(target_dev, non_blocking=False)
             except Exception as exc:  # noqa: BLE001
-                if verbose_log:
+                if verbose:
                     print(
                         f"[ComfyUI-LTX2-MultiGPU] WARN: VAE first_stage_model.to({target_dev}) "
                         f"failed: {exc}"
@@ -669,20 +637,20 @@ class LTX2_MultiGPU_VAELoader:
             try:
                 vae.to(target_dev)
             except Exception as exc:  # noqa: BLE001
-                if verbose_log:
+                if verbose:
                     print(
                         f"[ComfyUI-LTX2-MultiGPU] WARN: vae.to({target_dev}) failed: {exc}"
                     )
 
-        if verbose_log:
+        if verbose:
             try:
                 import os
                 vae_gb = os.path.getsize(vae_path) / (1024 ** 3)
             except Exception:  # noqa: BLE001
                 vae_gb = 0.0
             print(
-                f"[ComfyUI-LTX2-MultiGPU] VAE loaded: {vae_name} "
-                f"({vae_gb:.2f} GB) @ {target_dev} (donor={donor_device!r})"
+                f"[ComfyUI-LTX2-MultiGPU] VAE loaded: {vae_model} "
+                f"({vae_gb:.2f} GB) @ {target_dev} (memory_gpu={memory_gpu!r})"
             )
 
         return (vae,)

@@ -1,14 +1,14 @@
 [project]
 name = "ComfyUI-LTX2-MultiGPU"
 description = "Hybrid Multi-GPU split loader for LTX 2.3 GGUF on 2x T4 (Kaggle). Made by THE-ANGEL-AI (The Angel Studio). Replaces ComfyUI-MultiGPU DisTorch2 regex splitting with explicit block-aware sharding and forward-hook hidden-state transfer."
-# 2026-06-30 — synchronized with CHANGELOG.md v0.2.1 (SoloAngel/SP-release + polish-bundle).
+# 2026-07-01 — synchronized with CHANGELOG.md v0.6.0-pre (SoloAngel/SP-release + polish-bundle).
 # v0.2.1: HIGH fixes (1) sage_attention_scratch key unification across
 # scripts/diagnostic.py + core/memory_tracker.py, (2) silent dtype drop в
 # _lock_inner_to._no_op_to — теперь dtype/memory_format/non_blocking
 # пробрасываются в original_to при device-move. MED дополнения: donor_device
 # в apply_strategy + DeviceStrategy INPUT_TYPES; loras_estimate в pipeline
 # projection (memory_tracker._project()). См. CHANGELOG v0.2.1 details.
-version = "0.3.0-pre"
+version = "0.6.0-pre"
 license = { text = "GPL-3.0-or-later" }
 authors = [
     { name = "The Angel Studio", email = "gi.the.angel@gmail.com" }
