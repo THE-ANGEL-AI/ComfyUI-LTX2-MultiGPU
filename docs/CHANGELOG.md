@@ -1,3 +1,126 @@
+## [v0.6.2-pre] — 2026-07-01 (WhitePaper §8.6 LOW: Virtual VRAM Support — `virtual_vram_gb` widget propagation)
+
+### ✨ Added (FEAT-§8.6)
+
+Реализует WhitePaper §8.6 LOW: `virtual_vram_gb` — reserved VRAM gap, расширяет
+effective `cuda:0` cap (для projection / auto-strategy) БЕЗ реального alloc. На Kaggle
+T4×2 (14.5 GB каждый) позволяет predict OOM-safety без free VRAM drains и без
+downgrade Q5_K_M → Q4_K_M в edge-budget scenarios.
+
+Clamp policy:
+  - Widget `INT [0..16]` step 1 → user-facing range.
+  - Store в `model_options["ltx2_multigpu_split"]["virtual_vram_gb"]` clamped [0, 16].
+  - Projection (`_project`, `auto_select_strategy`) clamped [0, 8] GB — safety
+    против wild-widget range и pathological LLM Hallucinated GB values.
+  - WARN ≥ 8 GB при verbose mode (визуальный guard).
+
+Touchpoints (4 files, additive only — все defaults = 0 → no-op для legacy workflows):
+
+- **core/gguf_split.py:hybrid_split_gguf(...)** — kwarg `virtual_vram_gb: float = 0.0`,
+  store в `patcher.model_options["ltx2_multigpu_split"]["virtual_vram_gb"]`.
+- **core/gguf_split.py:apply_strategy(...)** — mirror change, identical parity
+  с hybrid_split_gguf (hot-switch через DeviceStrategy ноду propagates тот же bonus).
+- **core/memory_tracker.py:estimate_vram_budget(...) + auto_select_strategy(...)** —
+  `virtual_vram_gb: float = 0.0` kwarg; `eff_cap0 = cap0 + max(0, min(8, vram))`;
+  bonus display line *"cuda:0 cap = X + virtual_vram_gb=Y = Z effective"* в report.
+- **nodes.py** — 3 nodes exposed `virtual_vram_gb` widget:
+    - `LTX2_MultiGPU_HybridSplitLoader` (DiT loader, required)
+    - `LTX2_MultiGPU_DeviceStrategy` (hot-switch strategy без reload, required)
+    - `LTX2_MultiGPU_MemoryDiagnostics` (pre-flight VRAM check + auto-recommendation, required)
+
+Примеры использования:
+  - UD Q5_K_M (~18 GB file) на T4×2 с `virtual_vram_gb=4` → eff_cap0 = 18.5 GB →
+    strategy выбирается когда без vram была бы None.
+  - UD Q4_K_M (~14 GB file) tight-edge: `virtual_vram_gb=2` → стратегия fits,
+    юзер не downgrad'нул на Q3.
+
+### 🔧 Fixed (5 bugfixes во время FEAT-§8.6 implementation)
+
+- **BUGFIX-1 (CRITICAL, NameError-prevention, core/gguf_split.py)**: При предыдущем
+  рефакторе cache-HIT snippet из `load_gemma_hybrid` был скопирован в тело
+  `hybrid_split_gguf`. Snippet ссылался на undefined `encoder_name / projection_name /
+  eject_models` → **NameError at runtime** при любом production-вызове DiT loader.
+  tests/ не покрывали путь (только import-check). Удалён misplaced block.
+  Gemma cache HIT корректно живёт ТОЛЬКО в `load_gemma_hybrid` (function-top, до `comfy.sd.load_clip`).
+
+- **BUGFIX-2 (backward-compat restore, core/gguf_split.py:apply_strategy)**: В
+  `apply_strategy()` `model_options["ltx2_multigpu_split"]` dict отсутствовал `"donor"`
+  legacy alias (был добавлен в v0.2.1 MED-3 follow-up, но потерян при v0.6.0-pre
+  UI rework → silent regression для downstream consumers, читающих
+  `[...]["donor"]`). Восстановлен — dict parity с `hybrid_split_gguf`:
+  `{strategy, primary, effective_donor, secondary, donor, donor_spec, block_split_index, virtual_vram_gb}`.
+
+- **BUGFIX-3 (widget consistency, nodes.py:MemoryDiagnostics)**: При FEAT-§8.6 первой
+  итерации `LTX2_MultiGPU_MemoryDiagnostics` widget `virtual_vram_gb` отсутствовал —
+  юзер с HybridSplitLoader widget `vram=4` видел bonus effect при sampling,
+  но НЕ видел в Diagnostics report (неконсистентно). Добавлен required widget +
+  threading в `estimate_vram_budget(..., virtual_vram_gb=...)`.
+
+- **BUGFIX-4 (test math, tests/test_memory_tracker_virtual_vram.py)**:
+  3 unit-теста в initial §8.6 suite использовали c0-only math без учёта
+  `c1 = dit_gb/fraction + gemma_gb + other_cuda1_gb(2.45 GB = audio_vae + sage_scratch)`,
+  что в `_project()` проекции добавляется к secondary side. Результаты:
+    - `test_virtual_vram_expands_cap0`: `dit_gb 35.0 → 18.0` (c0=18.10 входит в
+      eff_cap0=18.5, c1=11.45 входит в cap1=14.5).
+    - `test_virtual_vram_clamp_above_8`: `cap0=cap1 14.0 → 16.0` (c1=14.45 fits, чтобы
+      демонстрировать clamp [0, 8] на cap0 без cap1 бутылочного горлышка).
+    - `test_virtual_vram_does_not_affect_cap1`: `dit_gb 30.0 → 24.0` + explicit
+      `virtual_vram_gb=8.0` case (доказывает cap1 — bottleneck даже когда c0 fits).
+
+- **BUGFIX-5 (vacuous test, tests/negative_clamp_to_zero)**: в initial draft
+  `test_virtual_vram_negative_clamp_to_zero` имел NO `assert*` (vacuous pass). Добавлен
+  `self.assertIsNone(result_neg)` — фиксирует контракт "negative vram clamps to 0,
+  preserves baseline behavior" с явным поведением.
+
+### ✅ Tested-by
+
+```
+$ python -m unittest discover tests -v  | tail -1
+OK
+
+Totals (после BUGFIX-4 + BUGFIX-5):
+  - tests/test_memory_tracker_virtual_vram.py::TestAutoSelectVirtualVram: 5 / 5
+  - tests/test_memory_tracker_virtual_vram.py::TestEstimateVramBudgetVirtualVram: 2 / 2
+  - Baseline (128 тестов v0.6.1-pre): 128 / 128
+  - GRAND TOTAL: 135 тестов, 1 skipped (DEFERRED `test_runtime_falls_back_to_clip_when_text_encoders_empty`,
+    pre-existing), 0 failed, 0 errors.
+```
+
+- `python -m py_compile __init__.py nodes.py core/__init__.py core/gguf_split.py
+  core/gguf_reader.py core/memory_tracker.py core/sage_attention.py core/vram_parking.py
+  tests/test_memory_tracker_virtual_vram.py` — all OK.
+
+### Compatibility note
+
+**No breaking changes API:**
+  - `hybrid_split_gguf` / `apply_strategy` signatures получили NEW optional kwarg
+    `virtual_vram_gb: float = 0.0` — backward-compat: existing callers без kwarg
+    работают as-is (default 0 = no-op).
+  - `estimate_vram_budget` / `auto_select_strategy` — same.
+  - `LTX2_MultiGPU_MemoryDiagnostics.diagnose(...)` сигнатура получила NEW required
+    param `virtual_vram_gb: int`. Однако widget SPEC auto-located → ComfyUI
+    auto-fills default при отсутствии в workflow_api.json ⇒ existing API workflows
+    загружаются без migration script.
+  - `model_options["ltx2_multigpu_split"]` dict получил NEW ключ `"virtual_vram_gb"`
+    + восстановлен legacy alias `"donor"`. Consumers iterating keys теперь видят
+    consistent shape в обоих loaders (`hybrid_split_gguf` и `apply_strategy`).
+
+**Position-widgets_values workflows**: тот же длины массивов → no migration script needed.
+
+**API-format workflows** (`inputs` dict): `virtual_vram_gb: 0` default auto-fill →
+existing API workflows `JSON.load()` work as-is. New workflows могут явно задать
+`virtual_vram_gb: 4` для Kaggle T4×2 + UD Q5_K_M tight scenarios.
+
+**Backward-compat guarantees**:
+  - `core/gguf_split` exports (`hybrid_split_gguf`, `apply_strategy`, `load_gemma_hybrid`,
+    `resolve_donor_device`, `hybrid_split_gguf`, `_split_blocks_indices`,
+    `clear_gemma_cache`) — signatures unchanged.
+  - `core/memory_tracker` exports (`estimate_vram_budget`, `auto_select_strategy`,
+    `gguf_quant_aware_bytes`, `gguf_estimate_bytes`, `QUANT_BITS_APPROX`) — unchanged.
+  - Public `__version__` synced: `__init__.py` + `pyproject.toml` — `0.6.2-pre`.
+
+---
+
 ## [v0.6.1-pre] — 2026-07-01 (Hotfix: relative imports — Kaggle / V3 loader fix)
 
 ### 🚨 Critical fix

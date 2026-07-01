@@ -162,6 +162,10 @@ class LTX2_MultiGPU_HybridSplitLoader:
                 ),
                 # DiT-specific: НЕТ 'cpu' — DiT не может быть на CPU во время sampling.
                 "memory_gpu": (_memory_gpu_choices(include_cpu=False), {"default": "auto"}),
+                # NEW (v0.6.2-pre, WhitePaper §8.6): virtual_vram_gb — reserved VRAM gap.
+                # Расширяет effective cap cuda:0 для projection / auto-strategy без alloc.
+                # Clamp [0, 16] GB (safety clamp [0, 8] в projection). Default 0 — no-op.
+                "virtual_vram_gb": ("INT", {"default": 0, "min": 0, "max": 16, "step": 1}),
                 "verbose": ("BOOLEAN", {"default": False}),
             }
         }
@@ -171,6 +175,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
         gguf_model: str,
         split_mode: str,
         memory_gpu: str,
+        virtual_vram_gb: int,
         verbose: bool,
     ) -> tuple:
         """Делегирует в core.gguf_split.hybrid_split_gguf (R4: tuple-возврат)."""
@@ -187,6 +192,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
                 strategy=split_mode,
                 verbose=verbose,
                 donor_device=memory_gpu,
+                virtual_vram_gb=float(virtual_vram_gb),
             )
         except NotImplementedError as exc:
             raise RuntimeError(
@@ -196,7 +202,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
         if verbose:
             print(
                 f"[ComfyUI-LTX2-MultiGPU] Loaded {gguf_model} with split_mode "
-                f"{split_mode}, memory_gpu={memory_gpu}"
+                f"{split_mode}, memory_gpu={memory_gpu}, virtual_vram_gb={virtual_vram_gb}"
             )
 
         return (model_patcher,)
@@ -319,6 +325,10 @@ class LTX2_MultiGPU_MemoryDiagnostics:
             "required": {
                 "gguf_model": gguf_opts,
                 "clip_model": clip_opts,
+                # NEW (v0.6.2-pre, WhitePaper §8.6): virtual_vram_gb widget mirror
+                # HybridSplitLoader / DeviceStrategy — отображается в report
+                # и применяется к auto-select strategy. Default 0 = no-op.
+                "virtual_vram_gb": ("INT", {"default": 0, "min": 0, "max": 16, "step": 1}),
                 # Per node_fyx.md: parameter naming follows English "clear cache
                 # after" — clearer for non-native speakers than "purge".
                 "clear_cache_after": ("BOOLEAN", {"default": True}),
@@ -329,6 +339,7 @@ class LTX2_MultiGPU_MemoryDiagnostics:
         self,
         gguf_model: str,
         clip_model: str,
+        virtual_vram_gb: int,
         clear_cache_after: bool,
     ) -> tuple:
         """R4: V1 tuple-контракт — возвращаем ровно ``(report,)``."""
@@ -338,6 +349,7 @@ class LTX2_MultiGPU_MemoryDiagnostics:
             gguf_name=gguf_model,
             gemma_name=clip_model,
             purge_cache=clear_cache_after,
+            virtual_vram_gb=float(virtual_vram_gb),
         )
         print(f"[ComfyUI-LTX2-MultiGPU]\n{report}")
         return (report,)
@@ -373,6 +385,10 @@ class LTX2_MultiGPU_DeviceStrategy:
                 # NEW (v0.2.1) / v0.6.0-pre renamed: honor user override from
                 # HybridSplitLoader; cpu отвергнут для DiT в INPUT_TYPES.
                 "memory_gpu": (_memory_gpu_choices(include_cpu=False), {"default": "auto"}),
+                # NEW (v0.6.2-pre, WhitePaper §8.6): required widget mirror HybridSplitLoader.
+                # Hot-switch strategy без reload применяется — needs virtual_vram_gb
+                # для consistency с HybridSplitLoader'ом (default 0 → no change).
+                "virtual_vram_gb": ("INT", {"default": 0, "min": 0, "max": 16, "step": 1}),
             },
             "optional": {
                 "verbose": ("BOOLEAN", {"default": False}),
@@ -384,6 +400,7 @@ class LTX2_MultiGPU_DeviceStrategy:
         model,
         mode: str,
         memory_gpu: str = "auto",
+        virtual_vram_gb: int = 0,
         verbose: bool = False,
     ) -> tuple:
         from .core.gguf_split import apply_strategy as _apply
@@ -394,6 +411,7 @@ class LTX2_MultiGPU_DeviceStrategy:
                 strategy=mode,
                 verbose=verbose,
                 donor_device=memory_gpu,
+                virtual_vram_gb=float(virtual_vram_gb),
             )
         except NotImplementedError as exc:
             raise RuntimeError(

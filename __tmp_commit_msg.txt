@@ -1,0 +1,80 @@
+feat(pipeline): v0.6.2-pre — WhitePaper §8.6 Virtual VRAM Support
+
+Реализует WhitePaper §8.6 LOW: `virtual_vram_gb` — reserved VRAM gap,
+расширяет effective cuda:0 cap (projection / auto-strategy) БЕЗ реального
+alloc. На Kaggle T4×2 (14.5 GB каждая) позволяет predict OOM-safety без
+free-VRAM drains и без downgrade Q5_K_M → Q4_K_M в edge-budget scenarios.
+
+FEAT-§8.6 — 4 touchpoints (additive, all default = 0 → no-op для legacy
+workflows):
+
+  1. core/gguf_split.py:hybrid_split_gguf(...) — kwarg
+     virtual_vram_gb: float = 0.0; store в
+     patcher.model_options["ltx2_multigpu_split"]["virtual_vram_gb"]
+     clamped [0, 16] с WARN ≥ 8 (safety).
+
+  2. core/gguf_split.py:apply_strategy(...) — mirror change для parity
+     с hybrid_split_gguf (DeviceStrategy hot-switch propagates тот же bonus).
+
+  3. core/memory_tracker.py:estimate_vram_budget(...) +
+     auto_select_strategy(...) — virtual_vram_gb: float = 0.0 kwarg;
+     eff_cap0 = cap0 + max(0, min(8, vram)); display line
+     "cuda:0 cap = X + virtual_vram_gb=Y = Z effective" в report.
+
+  4. nodes.py — 3 nodes exposed virtual_vram_gb widget (INT [0..16] step 1
+     default 0): HybridSplitLoader + DeviceStrategy + MemoryDiagnostics.
+
+BUGFIX-1 (CRITICAL, NameError-prevention, core/gguf_split.py):
+  Mis-copied Gemma cache-HIT block был в теле hybrid_split_gguf (refs undefined
+  encoder_name / projection_name / eject_models). При production-вызове
+  DiT loader выдал бы NameError. Тесты не покрывали путь (только import-check).
+  Удалён misplaced block. Gemma cache HIT корректно живёт ТОЛЬКО в
+  load_gemma_hybrid (function-top, до comfy.sd.load_clip).
+
+BUGFIX-2 (backward-compat restore, core/gguf_split.py:apply_strategy):
+  apply_strategy model_options["ltx2_multigpu_split"] dict потерял "donor"
+  legacy alias при v0.6.0-pre UI rework → silent regression для downstream
+  consumers, читающих [...]["donor"]. Восстановлен — dict parity с
+  hybrid_split_gguf: {strategy, primary, effective_donor, secondary, donor,
+  donor_spec, block_split_index, virtual_vram_gb}.
+
+BUGFIX-3 (widget consistency, nodes.py:MemoryDiagnostics):
+  LTX2_MultiGPU_MemoryDiagnostics не имел virtual_vram_gb widget → юзер с
+  HybridSplitLoader vram=4 видел bonus в sampling'е, но НЕ видел в
+  Diagnostics report. Добавлен required widget + threading в
+  estimate_vram_budget(..., virtual_vram_gb=...).
+
+BUGFIX-4 (test math, tests/test_memory_tracker_virtual_vram.py):
+  3 unit-теста в initial §8.6 suite использовали c0-only math без учёта
+  c1 = dit_gb/fraction + gemma + other_cuda1 (2.45 GB = audio_vae + sage_scratch).
+  Переписано:
+    test_virtual_vram_expands_cap0:       dit_gb 35.0 → 18.0
+    test_virtual_vram_clamp_above_8:      cap0=cap1 14.0 → 16.0
+    test_virtual_vram_does_not_affect_cap1: dit_gb 30.0 → 24.0 + explicit vram=8 case
+
+BUGFIX-5 (vacuous test, tests/negative_clamp_to_zero):
+  initial draft test_virtual_vram_negative_clamp_to_zero имел NO assert
+  (vacuous pass). Добавлен self.assertIsNone(result_neg) — фиксирует контракт
+  "negative vram clamps to 0, preserves baseline".
+
+Tested-by: python -m unittest discover tests → 135 / 135 pass
+  (128 baseline v0.6.1-pre + 7 new test_memory_tracker_virtual_vram suite).
+  1 skipped (DEFERRED pre-existing test_runtime_falls_back_to_clip_when_text_encoders_empty).
+  0 failed. 0 errors.
+py_compile всех 8 source-файлов + new test_memory_tracker_virtual_vram.py: OK.
+
+Public API: NO breaking changes:
+  - hybrid_split_gguf / apply_strategy: NEW optional kwarg virtual_vram_gb.
+    Existing callers without kwarg keep working (default 0 = no-op).
+  - estimate_vram_budget / auto_select_strategy: same.
+  - MemoryDiagnostics widget added with default 0 → ComfyUI auto-fill для
+    existing API workflows без миграционного скрипта.
+  - model_options dict: NEW ключ "virtual_vram_gb" + восстановлен legacy alias
+    "donor" → consumers iterating keys видят consistent shape в обоих loaders.
+
+Files changed: 3 source + 1 doc + 1 new test (gitignored but kept consistent):
+  - core/gguf_split.py      +39 -22 (FEAT + BUGFIX-1 + BUGFIX-2)
+  - core/memory_tracker.py  +30  -5 (FEAT + projection clamp [0,8] + display)
+  - nodes.py                +20  -0 (FEAT widget × 3 nodes)
+  - docs/CHANGELOG.md       +entry  (this commit's documentation)
+  - tests/test_memory_tracker_virtual_vram.py  NEW (7 tests, gitignored)

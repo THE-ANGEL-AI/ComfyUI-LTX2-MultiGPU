@@ -263,16 +263,23 @@ def auto_select_strategy(
     cap0: float,
     cap1: float,
     components: dict[str, float] | None = None,
+    virtual_vram_gb: float = 0.0,
 ) -> str | None:
     """Выбирает лучшую стратегию которая помещается в VRAM.
 
     Приоритет: blocks_50_50 > blocks_30_70 > pipeline.
     Возвращает None если ни одна стратегия не помещается.
+
+    NEW (v0.6.2-pre, WhitePaper §8.6): ``virtual_vram_gb`` бонус к cap0
+    (primary) — reserved VRAM gap для DiT split без реального alloc.
+    Clamp [0, 16]; clamp [0, 8] для safety в проекции. Silent default 0.
     """
     comps = components or COMPONENT_FOOTPRINT_GB
+    eff_vram = max(0.0, min(8.0, float(virtual_vram_gb)))
+    eff_cap0 = cap0 + eff_vram
     for strategy in ("blocks_50_50", "blocks_30_70", "pipeline"):
         c0, c1 = _project(strategy, dit_gb, gemma_gb, comps)
-        if c0 <= cap0 and c1 <= cap1:
+        if c0 <= eff_cap0 and c1 <= cap1:
             return strategy
     return None
 
@@ -284,6 +291,7 @@ def estimate_vram_budget(
     gguf_name: str,
     gemma_name: str = "",
     purge_cache: bool = True,
+    virtual_vram_gb: float = 0.0,
 ) -> str:
     """Подсчитывает ожидаемые VRAM-затраты + рекомендация стратегии.
 
@@ -378,19 +386,28 @@ def estimate_vram_budget(
         else cap0
     )
 
-    lines.append(f"  cuda:0 cap = {cap0:.2f} GB  |  cuda:1 cap = {cap1:.2f} GB")
+    # NEW (v0.6.2-pre, WhitePaper §8.6): virtual-aware cap boost (cuda:0).
+    eff_vram = max(0.0, min(8.0, float(virtual_vram_gb)))
+    eff_cap0 = cap0 + eff_vram
+    if eff_vram > 0:
+        lines.append(
+            f"  cuda:0 cap = {cap0:.2f} GB + virtual_vram_gb={eff_vram:.1f} GB "
+            f"= {eff_cap0:.2f} GB effective"
+        )
+    else:
+        lines.append(f"  cuda:0 cap = {cap0:.2f} GB  |  cuda:1 cap = {cap1:.2f} GB")
     lines.append("")
 
     valid_strategies: list[str] = []
     for strategy in ("blocks_50_50", "blocks_30_70", "pipeline"):
         c0, c1 = _project(strategy, dit_vram_gb, gemma_gb, COMPONENT_FOOTPRINT_GB)
-        ok0 = "✓" if c0 <= cap0 else "✗ OOM"
+        ok0 = "✓" if c0 <= eff_cap0 else "✗ OOM"
         ok1 = "✓" if c1 <= cap1 else "✗ OOM"
         lines.append(
             f"  {strategy:>14s}: cuda0={c0:5.2f} GB {ok0:6s} | "
             f"cuda1={c1:5.2f} GB {ok1:6s}"
         )
-        if c0 <= cap0 and c1 <= cap1:
+        if c0 <= eff_cap0 and c1 <= cap1:
             valid_strategies.append(strategy)
 
     # ── Текущее состояние карт ────────────────────────────────────────────
@@ -409,7 +426,10 @@ def estimate_vram_budget(
     # ── Auto-select + рекомендация ───────────────────────────────────────
     lines.append("")
     lines.append("─ Recommendation ─")
-    best = auto_select_strategy(dit_vram_gb, gemma_gb, cap0, cap1, COMPONENT_FOOTPRINT_GB)
+    best = auto_select_strategy(
+        dit_vram_gb, gemma_gb, cap0, cap1,
+        COMPONENT_FOOTPRINT_GB, virtual_vram_gb=virtual_vram_gb,
+    )
     if best:
         lines.append(f"✅ AUTO: {best}")
     else:

@@ -652,6 +652,7 @@ def hybrid_split_gguf(
     strategy: str = "blocks_50_50",
     verbose: bool = False,
     donor_device: str = "auto",
+    virtual_vram_gb: float = 0.0,
 ) -> Any:
     """Главная точка: GGUF → ModelPatcher с раскиданными по GPU блоками.
 
@@ -701,17 +702,11 @@ def hybrid_split_gguf(
     # ── Шаг 2: target devices ───────────────────────────────────────────────
     primary_dev, secondary_dev = resolve_devices()
     donor_dev = resolve_donor_device(donor_device, primary_dev, secondary_dev)
-    # Cache HIT lookup BEFORE load_clip: per reviewer item #3, actually short-circuit return.
-    # Reviewer earlier flagged: defensive-only path was dead overhead; this restores the 10–30s
-    # savings for 2-pass workflows. Defensive getattr for `.model` prevents AttributeError on
-    # edge cases (patcher-self cached).
-    _try_cache_hit = _GEMMA_CACHE.get((str(encoder_name), str(projection_name), str(donor_device), bool(eject_models)))
-    if _try_cache_hit is not None:
-        try:
-            _unlock_inner_to_recursive(getattr(_try_cache_hit, "model", _try_cache_hit))
-        except Exception:
-            pass
-        return _try_cache_hit
+    # FIX (v0.6.2-pre review): Gemma cache HIT shortcut moved out of hybrid_split_gguf —
+    # this function loads DiT (encoder_name/projection_name/eject_models don't exist as
+    # params). The Gemma-only cache is in load_gemma_hybrid (function-top, before
+    # comfy.sd.load_clip). Pre-fix CodeSearch reported: encoder_name referenced → runtime
+    # NameError when hybrid_split_gguf called from production.
     donor_is_cpu = str(donor_dev).startswith("cpu")
 
     # Defensive: cpu как donor для DiT — anti-feature. INPUT_TYPES HybridSplitLoader
@@ -888,6 +883,16 @@ def hybrid_split_gguf(
         # "donor" для backward-compat. После MED-3 effective_donor может быть primary
         # или secondary в зависимости от donor_device widget — поэтому "secondary"
         # name misleading. Consumers должны читать "effective_donor" first.
+        # NEW (v0.6.2-pre, WhitePaper §8.6 LOW): virtual_vram_gb (Reserved VRAM Gap)
+        # — extends effective cuda:0 cap (for projection / auto-strategy) берз
+        # реального alloc. Clamp [0, 16] GB с WARN если выше 8 (safety).
+        # VRAM Diagnostics / auto_select_strategy читают из model_options.
+        vram_bonus = max(0.0, min(16.0, float(virtual_vram_gb)))
+        if virtual_vram_gb > 8.0 and verbose:
+            print(
+                "[ComfyUI-LTX2-MultiGPU] WARN: virtual_vram_gb="
+                f"{virtual_vram_gb} > 8 GB — clamped to 8.0 GB для безопасности."
+            )
         patcher.model_options["ltx2_multigpu_split"] = {
             "strategy": strategy,
             "primary": str(primary_dev),
@@ -896,6 +901,7 @@ def hybrid_split_gguf(
             "donor": str(effective_donor),            # legacy alias effective_donor
             "donor_spec": donor_device,
             "block_split_index": splits[0] if splits else None,
+            "virtual_vram_gb": vram_bonus,            # NEW (v0.6.2-pre, §8.6)
         }
     except Exception:  # noqa: BLE001
         pass
@@ -1654,6 +1660,7 @@ def apply_strategy(
     strategy: str,
     verbose: bool = False,  # noqa: ARG003
     donor_device: str = "auto",
+    virtual_vram_gb: float = 0.0,
 ) -> Any:
     """Применяет новую стратегию к уже загруженному ModelPatcher.
 
@@ -1854,13 +1861,23 @@ def apply_strategy(
         # NEW (v0.2.1): effective_donor как canonical key, "secondary" оставлен как
         # legacy alias для backward-compat. После MED-3 effective_donor может быть
         # как primary, так и secondary — поэтому "secondary" name misleading.
+        # NEW (v0.6.2-pre, WhitePaper §8.6 LOW): virtual_vram_gb в model_options
+        # при hot-switch через DeviceStrategy. Clamp [0, 16] с WARN > 8.
+        vram_bonus = max(0.0, min(16.0, float(virtual_vram_gb)))
+        if virtual_vram_gb > 8.0 and verbose:
+            print(
+                "[ComfyUI-LTX2-MultiGPU] WARN: apply_strategy virtual_vram_gb="
+                f"{virtual_vram_gb} > 8 GB — clamped to 8.0 GB для безопасности."
+            )
         patcher.model_options["ltx2_multigpu_split"] = {
             "strategy": strategy,
             "primary": str(primary_dev),
             "effective_donor": str(effective_donor),  # canonical post-v0.2.1
             "secondary": str(secondary_dev),          # legacy (always = secondary)
+            "donor": str(effective_donor),            # legacy alias effective_donor
             "donor_spec": donor_device,
             "block_split_index": splits[0] if splits else None,
+            "virtual_vram_gb": vram_bonus,            # NEW (v0.6.2-pre, §8.6)
         }
     except Exception:  # noqa: BLE001
         pass
