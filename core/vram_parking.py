@@ -80,8 +80,8 @@ def park_dit(patcher: Any) -> Any:
     except Exception:  # noqa: BLE001
         return patcher
 
-    from core.gguf_split import _remove_stored_hooks, _move_modules_with_prefix
-    from core.gguf_split import EMBED_AND_HEAD_REL, LTX2_DIT_BLOCK_COUNT
+    from .gguf_split import _remove_stored_hooks, _move_modules_with_prefix
+    from .gguf_split import EMBED_AND_HEAD_REL, LTX2_DIT_BLOCK_COUNT
 
     inner = patcher.model
     diffusion = getattr(inner, "diffusion_model", inner)
@@ -99,7 +99,7 @@ def park_dit(patcher: Any) -> Any:
     # Паттерн: unlock → move → re-lock (для sampler safety после парковки,
     # если unpark не сработает — DiT остаётся запертым от sampler'а на CPU,
     # вместо silent migrate на cuda:0 mid-sampling).
-    from core.gguf_split import _unlock_inner_to_recursive, _lock_inner_to_recursive
+    from .gguf_split import _unlock_inner_to_recursive, _lock_inner_to_recursive
     _unlock_inner_to_recursive(inner)
 
     # Перемещаем все блоки DiT на CPU (per-block, не inner.to('cpu')).
@@ -170,7 +170,7 @@ def unpark_dit(patcher: Any) -> Any:
     if not _is_parked(patcher):
         return patcher
 
-    from core.gguf_split import apply_strategy
+    from .gguf_split import apply_strategy
 
     # Читаем значения ДО вызова apply_strategy — она заменит dict целиком,
     # и opts-ссылка станет stale.

@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
 # of truth. Если core добавляет/удаляет стратегию, ноды синхронизируются
 # автоматически.
 try:
-    from core.gguf_split import STRATEGIES as _STRATEGIES  # type: ignore[import-not-found]
+    from .core.gguf_split import STRATEGIES as _STRATEGIES  # type: ignore[import-not-found]
 except Exception:  # noqa: BLE001
     # Fallback: при unit-тестах где core не подгружен — держим 5 стратегий как
     # literal, чтобы ComfyUI dropdown отрисовался корректно. core.STRATEGIES —
@@ -179,7 +179,7 @@ class LTX2_MultiGPU_HybridSplitLoader:
                 "folder_paths недоступен — узел должен запускаться внутри ComfyUI"
             )
 
-        from core.gguf_split import hybrid_split_gguf
+        from .core.gguf_split import hybrid_split_gguf
 
         try:
             model_patcher = hybrid_split_gguf(
@@ -265,7 +265,7 @@ class LTX2_MultiGPU_GemmaHybridLoader:
         unload_after_generation: bool,
         verbose: bool,
     ) -> tuple:
-        from core.gguf_split import load_gemma_hybrid
+        from .core.gguf_split import load_gemma_hybrid
 
         clip = load_gemma_hybrid(
             encoder_name=clip_model,
@@ -332,7 +332,7 @@ class LTX2_MultiGPU_MemoryDiagnostics:
         clear_cache_after: bool,
     ) -> tuple:
         """R4: V1 tuple-контракт — возвращаем ровно ``(report,)``."""
-        from core.memory_tracker import estimate_vram_budget
+        from .core.memory_tracker import estimate_vram_budget
 
         report = estimate_vram_budget(
             gguf_name=gguf_model,
@@ -386,7 +386,7 @@ class LTX2_MultiGPU_DeviceStrategy:
         memory_gpu: str = "auto",
         verbose: bool = False,
     ) -> tuple:
-        from core.gguf_split import apply_strategy as _apply
+        from .core.gguf_split import apply_strategy as _apply
 
         try:
             new_patcher = _apply(
@@ -446,7 +446,7 @@ class LTX2_MultiGPU_VRAMParking:
         park_model: bool,
         verbose: bool = False,
     ) -> tuple:
-        from core.vram_parking import park_dit, unpark_dit
+        from .core.vram_parking import park_dit, unpark_dit
 
         if park_model:
             park_dit(model)
@@ -507,7 +507,7 @@ class LTX2_MultiGPU_SageAttention:
         enable: bool,
         verbose: bool = False,
     ) -> tuple:
-        from core.sage_attention import get_sageattn_patch
+        from .core.sage_attention import get_sageattn_patch
 
         # Clone patcher чтобы не мутировать оригинальный граф
         # (shallow copy model_options).
@@ -601,7 +601,7 @@ class LTX2_MultiGPU_VAELoader:
                 f"comfy.sd / model_management недоступны: {exc}"
             ) from exc
 
-        from core.gguf_split import resolve_devices, resolve_donor_device
+        from .core.gguf_split import resolve_devices, resolve_donor_device
 
         primary_dev, secondary_dev = resolve_devices()
         target_dev = resolve_donor_device(memory_gpu, primary_dev, secondary_dev)

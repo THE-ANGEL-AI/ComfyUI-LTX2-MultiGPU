@@ -143,7 +143,7 @@ def gguf_quant_aware_bytes(gguf_path: str) -> tuple[int, int, int]:
         file_size = 0
 
     try:
-        from core.gguf_reader import read_gguf_header
+        from .gguf_reader import read_gguf_header
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             "gguf_reader недоступен — запустите в составе пакета ComfyUI-LTX2-MultiGPU"
@@ -197,7 +197,7 @@ def gguf_estimate_bytes(gguf_path: str) -> tuple[int, int]:
     Для новых вызовов используйте ``gguf_quant_aware_bytes()``.
     """
     try:
-        from core.gguf_reader import read_gguf_header
+        from .gguf_reader import read_gguf_header
     except Exception:  # noqa: BLE001
         import importlib
         try:

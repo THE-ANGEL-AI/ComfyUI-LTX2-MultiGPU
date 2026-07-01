@@ -24,6 +24,21 @@ __author_email__ = "gi.the.angel@gmail.com"
 __author_github__ = "THE-ANGEL-AI"
 __repo__ = "https://github.com/THE-ANGEL-AI/ComfyUI-LTX2-MultiGPU"
 
+# FIX (v0.6.1-pre): sys.path shim для совместимости с ComfyUI load- путями,
+# которые НЕ добавляют base_dir пакета в sys.path автоматически
+# (например, V3 imports / zip-installs / Kaggle runtime).
+# Используем ``append`` (не ``insert(0, ...)``) — чтобы не ломать приоритеты
+# upstream-пакетов (comfy/, torch/) в случае коллизии имени ``core``.
+# Тесты в tests/ продолжат работать: они импортируют ``from core import ...``
+# после этой строчки, base_dir уже известен интерпретатору. Primary
+# motivation — Kaggle runtime + ComfyUI V3 loader, которые НЕ добавляют
+# package dir в sys.path автоматически → ModuleNotFoundError: 'core'.
+import sys as _sys
+import os as _os
+_BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _BASE_DIR not in _sys.path:
+    _sys.path.append(_BASE_DIR)
+
 # Консольный баннер — opt-in через env var. По умолчанию тихо, чтобы НЕ
 # засорять stdout при штатной загрузке пакета в ComfyUI. Установите
 # ``LTX2_MULTIGPU_VERBOSE=1`` если хотите видеть attribution при старте.
@@ -62,7 +77,7 @@ def _build_config() -> None:
     # NEW (v0.6.0-pre): _GEMMA_CACHE orphan cleanup at package load.
     # Wrapped in try/except so failure doesn't block package import (R6).
     try:
-        from core.gguf_split import clear_gemma_cache  # type: ignore[import-not-found]
+        from .core.gguf_split import clear_gemma_cache  # type: ignore[import-not-found]
         clear_gemma_cache()
     except Exception:  # noqa: BLE001
         # Best-effort cleanup; if core module is unavailable (test env),

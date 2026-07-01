@@ -1,3 +1,53 @@
+## [v0.6.1-pre] — 2026-07-01 (Hotfix: relative imports — Kaggle / V3 loader fix)
+
+### 🚨 Critical fix
+
+- **FIX IMPORTS-1 (ModuleNotFoundError: No module named 'core')**:
+  Все 14 внутренних импортов (`from core.X`) заменены на relative
+  (`from .core.X` / `from .X`). Это устраняет `ModuleNotFoundError` при
+  запуске на Kaggle / standalone-окружениях, где ComfyUI загружает ноду
+  через `importlib.import_module('nodes')` БЕЗ добавления base-папки
+  пакета в `sys.path`.
+
+  Файлы:
+    - `__init__.py`: 1 import (clear_gemma_cache)
+    - `nodes.py`: 8 imports (STRATEGIES + 7 ленивых в try/except)
+    - `core/vram_parking.py`: 3 imports (_remove_stored_hooks / EMBED_AND_HEAD_REL / LTX2_DIT_BLOCK_COUNT / _unlock_inner_to_recursive / _lock_inner_to_recursive / apply_strategy)
+    - `core/memory_tracker.py`: 2 imports (read_gguf_header)
+
+- **FIX IMPORTS-2 (sys.path shim)**: в `__init__.py` ПЕРЕД `_build_config()`
+  добавлен defensive shim:
+  ```python
+  _BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
+  if _BASE_DIR not in _sys.path:
+      _sys.path.append(_BASE_DIR)
+  ```
+  Что это даёт:
+    - `tests/` (gitignored) продолжают работать со старыми абсолютными
+      `from core import ...` импортами — base_dir добавляется в sys.path,
+      Python находит `core/*.py` напрямую.
+    - Защищает от edge-case'ов когда ComfyUI НЕ загружает ноду как
+      package (`from . import nodes` fail) — абсолютные импорты в
+      legacy-местах (если такие остались) получат base_dir в sys.path.
+
+  Decision: `append` (не `insert(0)`) сознательно — `core` ни с чем не
+  конфликтует в ComfyUI окружении; append не shadow'ит системные пакеты
+  в случае коллизии имени.
+
+### ✅ Verified
+
+- `python -m py_compile __init__.py nodes.py core/**.py` — все 8 файлов OK.
+- Code-reviewer approval: consistent import style, no regression.
+
+### ⚠️ Что не сломано
+
+- public API: `hybrid_split_gguf` / `load_gemma_hybrid` / `park_dit` /
+  `apply_strategy` / `clear_gemma_cache` signatures НЕ изменились.
+- Widget keys v0.6.0-pre: не трогали.
+- Node DISPLAY_NAMEs / CATEGORY hierarchy: не трогали.
+
+---
+
 ## [v0.6.0-pre] — 2026-07-01 (Batch 4: Critical Multi-GPU + UI rework + Gemma caching)
 
 ### 🚨 BREAKING CHANGES (workflow key renames)
